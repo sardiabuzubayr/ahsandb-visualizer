@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AhsanDB</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // Startup failure reporter: if the app never rendered, show the error instead of an empty window.
+      (function () {
+        function show(text) {
+          var root = document.getElementById("root");
+          if (!root || root.childElementCount) return;
+          var pre = document.createElement("pre");
+          pre.style.cssText = "margin:48px 24px;white-space:pre-wrap;font:12px ui-monospace,monospace;color:#f87171";
+          pre.textContent = "AhsanDB failed to start\n\n" + text;
+          root.appendChild(pre);
+        }
+        addEventListener("error", function (e) { show(e.message + "\n" + ((e.error && e.error.stack) || "")); });
+        addEventListener("unhandledrejection", function (e) { show(String((e.reason && e.reason.stack) || e.reason)); });
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

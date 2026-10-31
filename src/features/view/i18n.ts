@@ -1,0 +1,41 @@
+const en = {
+  "view.name": "Name",
+  "view.schema": "Schema",
+  "view.query": "Query",
+  "view.queryEditor": "View query editor",
+  "view.runPreview": "Run preview",
+  "view.previewHint": "Runs the query in the editor, first 100 rows",
+  "view.save": "Save view",
+  "view.loading": "Loading view…",
+  "view.notFound": "{name} was not found in {schema}",
+  "view.notSupported": "Materialized views can't be edited here",
+  "view.retry": "Retry",
+  "view.readOnly": "Read-only connection: changes can't be saved",
+  "view.reviewTitle": "Review changes to {name}",
+  "view.saved": "{name} saved",
+  "view.nameRequired": "Give the view a name",
+  "view.queryRequired": "Write the view's query",
+  "view.notRead": "Preview only runs read queries",
+};
+
+const id: typeof en = {
+  "view.name": "Nama",
+  "view.schema": "Skema",
+  "view.query": "Query",
+  "view.queryEditor": "Editor query view",
+  "view.runPreview": "Jalankan pratinjau",
+  "view.previewHint": "Menjalankan query di editor, 100 baris pertama",
+  "view.save": "Simpan view",
+  "view.loading": "Memuat view…",
+  "view.notFound": "{name} tidak ditemukan di {schema}",
+  "view.notSupported": "Materialized view tidak bisa diedit di sini",
+  "view.retry": "Coba lagi",
+  "view.readOnly": "Koneksi read-only: perubahan tidak bisa disimpan",
+  "view.reviewTitle": "Tinjau perubahan {name}",
+  "view.saved": "{name} tersimpan",
+  "view.nameRequired": "Beri nama view",
+  "view.queryRequired": "Tulis query view",
+  "view.notRead": "Pratinjau hanya menjalankan query baca",
+};
+
+export default { en, id };

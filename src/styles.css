@@ -1,0 +1,184 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+/* Dark is the primary design (:root); light is derived. */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e0e11;
+  --panel: #131317;
+  --surface: #18181d;
+  --raised: #212128;
+  --border: #26262d;
+  --border-strong: #363640;
+  --text: #ececf1;
+  --muted: #a3a3ad;
+  --faint: #8b8b96;
+  --accent: #8ea2ff;
+  --accent-strong: #b0bdff;
+  --accent-bg: rgba(142, 162, 255, 0.13);
+  /* Plain rgba (not color-mix): macOS 13's WebKit drops color-mix() declarations. */
+  --accent-sel: rgba(142, 162, 255, 0.3);
+  --accent-line: rgba(142, 162, 255, 0.07);
+  --accent-ring: rgba(142, 162, 255, 0.35);
+  --accent-glow: rgba(142, 162, 255, 0.1);
+  --prod-ring: rgba(248, 120, 120, 0.35);
+  --prod-glow: rgba(248, 120, 120, 0.1);
+  --on-accent: #0b0c14;
+  --prod: #f87878;
+  --prod-bg: rgba(248, 120, 120, 0.12);
+  --stg: #f2b84b;
+  --stg-bg: rgba(242, 184, 75, 0.12);
+  --dev: #61c9e6;
+  --dev-bg: rgba(97, 201, 230, 0.12);
+  --ok: #5ccb8a;
+  --ok-bg: rgba(92, 203, 138, 0.12);
+  --on-danger: #1a0b0b;
+  --overlay: rgba(4, 4, 7, 0.62);
+  --grid-dot: #23232a;
+  --syn-kw: #b4bcff;
+  --syn-fn: #7dd3fc;
+  --syn-str: #f4c77d;
+  --syn-num: #f59e7a;
+  --syn-cm: #8b8b96;
+  --syn-param: #e3a6f2;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --panel: #f5f5f7;
+  --surface: #ffffff;
+  --raised: #ebebef;
+  --border: #e2e2e7;
+  --border-strong: #cfcfd6;
+  --text: #18181b;
+  --muted: #52525b;
+  --faint: #6b6b75;
+  --accent: #4f63d9;
+  --accent-strong: #3b4fc4;
+  --accent-bg: rgba(79, 99, 217, 0.1);
+  --accent-sel: rgba(79, 99, 217, 0.22);
+  --accent-line: rgba(79, 99, 217, 0.06);
+  --accent-ring: rgba(79, 99, 217, 0.35);
+  --accent-glow: rgba(79, 99, 217, 0.1);
+  --prod-ring: rgba(201, 60, 60, 0.35);
+  --prod-glow: rgba(201, 60, 60, 0.1);
+  --on-accent: #ffffff;
+  --prod: #c93c3c;
+  --prod-bg: rgba(201, 60, 60, 0.1);
+  --stg: #9a6100;
+  --stg-bg: rgba(154, 97, 0, 0.1);
+  --dev: #0b7391;
+  --dev-bg: rgba(11, 115, 145, 0.1);
+  --ok: #1a7f45;
+  --ok-bg: rgba(26, 127, 69, 0.1);
+  --on-danger: #ffffff;
+  --overlay: rgba(24, 24, 27, 0.35);
+  --grid-dot: #dedee4;
+  --syn-kw: #4f46e5;
+  --syn-fn: #0369a1;
+  --syn-str: #a16207;
+  --syn-num: #c2410c;
+  --syn-cm: #6b6b75;
+  --syn-param: #a21caf;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-bg: var(--accent-bg);
+  --color-on-accent: var(--on-accent);
+  --color-prod: var(--prod);
+  --color-prod-bg: var(--prod-bg);
+  --color-stg: var(--stg);
+  --color-stg-bg: var(--stg-bg);
+  --color-dev: var(--dev);
+  --color-dev-bg: var(--dev-bg);
+  --color-ok: var(--ok);
+  --color-ok-bg: var(--ok-bg);
+  --color-on-danger: var(--on-danger);
+  --color-syn-kw: var(--syn-kw);
+  --color-syn-fn: var(--syn-fn);
+  --color-syn-str: var(--syn-str);
+  --color-syn-num: var(--syn-num);
+  --color-syn-cm: var(--syn-cm);
+  --color-syn-param: var(--syn-param);
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* Desktop app: UI chrome isn't selectable like a web page; data areas opt back in below. */
+  -webkit-user-select: none;
+  user-select: none;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+}
+
+@layer base {
+  input,
+  textarea,
+  pre,
+  code,
+  .cm-editor {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+}
+
+dialog::backdrop {
+  background: var(--overlay);
+}
+
+/* Native <dialog> resets so our panels control their own look. In the base layer so utilities win. */
+@layer base {
+  dialog {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    max-width: none;
+    max-height: none;
+  }
+}
+
+/* Code folding isn't part of the design. CodeMirror forces `.cm-gutter { display: flex !important }`
+   with a scoped selector, so this needs higher specificity. */
+.cm-editor .cm-gutter.cm-foldGutter {
+  display: none !important;
+}

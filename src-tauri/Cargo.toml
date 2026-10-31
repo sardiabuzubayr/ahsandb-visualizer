@@ -1,0 +1,50 @@
+[package]
+name = "ahsandb"
+version = "0.1.0"
+description = "AhsanDB Visualizer"
+authors = ["Abu Zubayr"]
+license = "Apache-2.0"
+repository = "https://github.com/sardiabuzubayr/ahsandb-visualizer"
+edition = "2024"
+rust-version = "1.90"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "ahsandb_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.12.5", features = [] }
+tauri-plugin-log = "2"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "tls-rustls", "postgres", "mysql", "sqlite", "json", "chrono", "rust_decimal", "uuid"] }
+tokio = { version = "1.54.1", features = ["sync", "time", "macros", "rt-multi-thread", "fs"] }
+thiserror = "2.0.21"
+uuid = { version = "1.29.0", features = ["v4"] }
+chrono = "0.4.45"
+futures = "0.3.34"
+rust_decimal = "1.43.0"
+tauri-plugin-dialog = "2.8.3"
+ring = "0.17.14"
+base64 = "0.22.1"
+socket2 = { version = "0.6.5", features = ["all"] }
+flate2 = "1.1"
+russh = { version = "0.64.1", default-features = false, features = ["ring", "flate2", "rsa"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
+tauri-plugin-opener = "2.7.2"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+# Debug info roughly doubles target/ size; panics still show file:line.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
