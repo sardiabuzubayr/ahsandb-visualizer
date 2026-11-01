@@ -5,6 +5,7 @@ import { EmptyWorkspace, ToastHost } from "./components/shell/EmptyWorkspace";
 import { HostKeyDialog } from "./components/shell/HostKeyDialog";
 import { Rail } from "./components/shell/Rail";
 import { shortcutFor } from "./components/shell/shortcuts";
+import { useConnect } from "./components/shell/useConnect";
 import { Sidebar } from "./components/shell/Sidebar";
 import { StatusBar } from "./components/shell/StatusBar";
 import { ConfirmCloseDialog, TabBar } from "./components/shell/TabBar";
@@ -88,22 +89,27 @@ function Shell() {
   const agentFull = state.agentOpen && state.agentMaximized;
 
   // Desktop: saved connections come from the backend store; the browser keeps the mock list.
-  // Session (open SQL tabs) is saved only after it was restored, so startup never overwrites it with no tabs.
+  // The session is saved only after it was restored, so startup never overwrites it with no tabs.
   const [restored, setRestored] = useState(false);
+  const { connect } = useConnect();
   useEffect(() => {
     if (!isTauri) return;
     api
       .listConnections()
       .then((connections) => {
         dispatch({ type: "setConnections", connections });
-        dispatch({ type: "restoreTabs", ...loadSession(connections.map((c) => c.id)) });
+        const saved = loadSession(connections.map((c) => c.id));
+        dispatch({ type: "restoreTabs", tabs: saved.tabs, activeTabId: saved.activeTabId, activeConnectionId: saved.activeConnectionId });
         setRestored(true);
+        for (const id of saved.connected) if (!connections.find((c) => c.id === id)?.connected) void connect(id);
       })
       .catch((e: unknown) => toast(e instanceof Error ? e.message : String(e)));
   }, []); // once on startup
+  const connected = state.connections.flatMap((c) => (c.connected ? [c.id] : [])).join("\n");
   useEffect(() => {
-    if (restored) saveSession(state.tabs, state.activeTabId);
-  }, [restored, state.tabs, state.activeTabId]);
+    if (restored)
+      saveSession({ tabs: state.tabs, activeTabId: state.activeTabId, activeConnectionId: state.activeConnectionId, connected: connected ? connected.split("\n") : [] });
+  }, [restored, state.tabs, state.activeTabId, state.activeConnectionId, connected]);
 
   const openSqlFile = useOpenSqlFile();
   useEffect(() => {

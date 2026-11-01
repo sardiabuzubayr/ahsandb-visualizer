@@ -86,8 +86,12 @@ export function TableDataTab({ tab }: { tab: Tab }) {
       if (n === req.current) loadingMore.current = false;
     }
   };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => void load(sort, 0), [sid, conn.connected, schema, table, sort, filter]);
+  // Waits for the connection: a restored tab mounts while it is still reconnecting.
+  useEffect(() => {
+    if (conn.connected) void load(sort, 0);
+    else (setError(t("results.notConnected")), setStatus("error"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sid, conn.connected, schema, table, sort, filter]);
   // Foreign keys, so FK cells can jump to the row they reference.
   useEffect(() => {
     if (!conn.connected) return;
@@ -275,8 +279,12 @@ export function TableDataTab({ tab }: { tab: Tab }) {
       <div className="flex min-w-0 flex-[999_1_560px] flex-col">
         <div className="flex min-h-[46px] shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
           <span className="flex items-center gap-1.5 text-[12.5px] text-faint">
-            {db}
-            <span>›</span>
+            {db && (
+              <>
+                {db}
+                <span>›</span>
+              </>
+            )}
             {schema !== db && (
               <>
                 {schema}

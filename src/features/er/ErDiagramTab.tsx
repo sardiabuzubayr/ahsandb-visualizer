@@ -168,7 +168,9 @@ function Diagram({ tab }: { tab: Tab }) {
   };
   useEffect(() => {
     setNodes([]);
-    void load();
+    // Waits for the connection: a restored tab mounts while it is still reconnecting.
+    if (conn.connected) void load();
+    else (setError(t("results.notConnected")), setStatus("error"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid, conn.connected, schema]);
 

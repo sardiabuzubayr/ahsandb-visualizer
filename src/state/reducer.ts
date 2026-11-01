@@ -58,7 +58,7 @@ export type Action =
   | { type: "setDirty"; id: string; dirty: boolean }
   | { type: "setTabDatabase"; id: string; database: string }
   /** Reopen tabs saved from the last session (startup, after connections are loaded). */
-  | { type: "restoreTabs"; tabs: Tab[]; activeTabId: string | null }
+  | { type: "restoreTabs"; tabs: Tab[]; activeTabId: string | null; activeConnectionId?: string | null }
   | { type: "toggleSidebar" }
   | { type: "setActiveConnection"; id: string }
   | { type: "toggleConnected"; id: string }
@@ -183,7 +183,8 @@ export function reducer(s: AppState, a: Action): AppState {
       const tabs = [...a.tabs.filter((t) => !s.tabs.some((x) => x.id === t.id)), ...s.tabs];
       const active = s.activeTabId ?? a.activeTabId;
       const tab = tabs.find((t) => t.id === active);
-      return { ...s, tabs, activeTabId: tab?.id ?? null, activeConnectionId: tab?.connectionId ?? s.activeConnectionId };
+      const savedConn = s.connections.some((c) => c.id === a.activeConnectionId) ? a.activeConnectionId! : s.activeConnectionId;
+      return { ...s, tabs, activeTabId: tab?.id ?? null, activeConnectionId: tab?.connectionId ?? savedConn };
     }
     case "setTabDatabase":
       return { ...s, tabs: s.tabs.map((t) => (t.id === a.id ? { ...t, database: a.database } : t)) };

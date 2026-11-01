@@ -87,6 +87,12 @@ test("restoreTabs reopens saved tabs before any opened since, and focuses the sa
   expect(s.activeConnectionId).toBe("orders-staging");
 });
 
+test("restoreTabs without tabs focuses the saved connection if it still exists", () => {
+  const empty = { ...base, tabs: [], activeTabId: null };
+  expect(reducer(empty, { type: "restoreTabs", tabs: [], activeTabId: null, activeConnectionId: "orders-staging" }).activeConnectionId).toBe("orders-staging");
+  expect(reducer(empty, { type: "restoreTabs", tabs: [], activeTabId: null, activeConnectionId: "gone" }).activeConnectionId).toBe(base.activeConnectionId);
+});
+
 test("opening the same .sql file again focuses its tab; Save as renames the tab", () => {
   const open = { type: "openTab", kind: "sql", connectionId: "orders-prod", title: "q.sql", filePath: "/tmp/q.sql" } as const;
   const s1 = reducer(base, open);
