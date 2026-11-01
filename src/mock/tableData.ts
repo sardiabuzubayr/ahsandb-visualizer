@@ -4,7 +4,7 @@ import type { Cell, Column, PendingChange } from "../types";
 export const ordersColumns: Column[] = [
   { name: "id", type: "bigserial", numeric: true, pk: true },
   { name: "customer_id", type: "bigint", numeric: true, fk: true },
-  { name: "status", type: "text" },
+  { name: "status", type: "order_status", enumValues: ["pending", "paid", "shipped", "cancelled"] },
   { name: "total", type: "numeric(14,2)", numeric: true },
   { name: "note", type: "text" },
   { name: "created_at", type: "timestamptz" },

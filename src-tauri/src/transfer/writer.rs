@@ -131,7 +131,7 @@ mod tests {
     use serde_json::json;
 
     fn col(name: &str) -> Column {
-        Column { name: name.into(), type_name: "text".into(), numeric: false, pk: false, fk: false }
+        Column { name: name.into(), type_name: "text".into(), numeric: false, pk: false, fk: false, enum_values: vec![] }
     }
 
     #[test]

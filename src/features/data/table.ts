@@ -15,6 +15,21 @@ export function splitTarget(target: string, conn: Pick<Connection, "driver" | "d
   return i < 0 ? { schema: defaultSchema(conn), table: target } : { schema: target.slice(0, i), table: target.slice(i + 1) };
 }
 
+/** Row selection after a click on row `i`: plain = just it, ⌘/Ctrl = toggle it, Shift = range from the anchor row. */
+export function selectRows(
+  keys: string[],
+  prev: ReadonlySet<string>,
+  anchor: number | null,
+  i: number,
+  mod: { shift: boolean; toggle: boolean },
+): Set<string> {
+  if (mod.shift && anchor !== null) return new Set(keys.slice(Math.min(anchor, i), Math.max(anchor, i) + 1));
+  if (!mod.toggle) return new Set([keys[i]]);
+  const next = new Set(prev);
+  if (!next.delete(keys[i])) next.add(keys[i]);
+  return next;
+}
+
 /** Header click cycle: asc → desc → none; another column starts at asc. */
 export function nextSort(current: OrderBy | null, column: string): OrderBy | null {
   if (current?.column !== column) return { column, desc: false };

@@ -1,5 +1,5 @@
-import { useEffect, useReducer, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, ArrowUpRight, Download, ListFilter, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { useEffect, useReducer, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { ArrowDown, ArrowUp, ArrowUpRight, Download, ListFilter, Plus, RotateCcw, RotateCw, TableProperties, Trash2, X } from "lucide-react";
 import { useT } from "../../i18n";
 import { api, isApiError } from "../../lib/api";
 import { useApp, useConnection, useTabDirty, useToast } from "../../state/app";
@@ -13,7 +13,7 @@ import { scopedId } from "../../lib/scope";
 import { firstDatabase } from "../editor/treeScope";
 import { PendingChangesPanel } from "./PendingChangesPanel";
 import { pendingReducer, rowKeyOf } from "./pending";
-import { followForeignKey, nextSort, splitTarget } from "./table";
+import { followForeignKey, nextSort, selectRows, splitTarget } from "./table";
 
 const PAGE = 200;
 const isBinary = (c: Column) => /bytea|blob|binary/i.test(c.type);
@@ -22,6 +22,19 @@ const errText = (e: unknown) => (isApiError(e) ? e.message : String(e));
 const parse = (text: string, prev: Cell, col: Column): Cell =>
   (typeof prev === "number" || (prev === null && col.numeric)) && /^-?\d+$/.test(text) ? Number(text) : text;
 
+function KeyBadge({ col }: { col: Column }) {
+  if (!col.pk && !col.fk) return null;
+  return (
+    <span
+      className={cn(
+        "mr-0.5 shrink-0 rounded-[3px] border px-[3px] font-mono text-[9.5px] leading-[13px] font-normal",
+        col.pk ? "border-stg text-stg" : "border-dev text-dev",
+      )}
+    >
+      {col.pk ? "PK" : "FK"}
+    </span>
+  );
+}
 
 export function TableDataTab({ tab }: { tab: Tab }) {
   const t = useT();
@@ -45,7 +58,9 @@ export function TableDataTab({ tab }: { tab: Tab }) {
   const [fks, setFks] = useState<ForeignKeyDef[]>([]);
   const [editing, setEditing] = useState<{ key: string; col: string } | null>(null);
   const seq = useRef(changes.length + 1);
-  const nullBtn = useRef<HTMLButtonElement>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const anchor = useRef<number | null>(null);
+  const [recordView, setRecordView] = useState(false);
   const markLost = useConnectionError();
   useTabDirty(tab.id, changes.length > 0);
 
@@ -56,6 +71,11 @@ export function TableDataTab({ tab }: { tab: Tab }) {
       const p = await api.tablePage(sid, schema, table, orderBy, where, offset, PAGE);
       if (n !== req.current) return;
       setPage((prev) => (offset === 0 ? p : { ...p, rows: [...prev.rows, ...p.rows] }));
+      // Keep selected rows that are still loaded; without a PK, keys are positions and mean nothing after a reload.
+      if (offset === 0) {
+        anchor.current = null;
+        setSelected((sel) => new Set(pkIdxs.length ? p.rows.map((r, i) => rowKey(r, i)).filter((k) => sel.has(k)) : []));
+      }
       setStatus("ready");
     } catch (e) {
       if (n !== req.current) return;
@@ -98,6 +118,12 @@ export function TableDataTab({ tab }: { tab: Tab }) {
     loadingMore.current = true;
     void load(sort, rows.length);
   };
+  const onRowClick = (e: MouseEvent, i: number) => {
+    if ((e.target as HTMLElement).closest("input, select, button")) return;
+    const keys = rows.map((r, j) => rowKey(r, j));
+    setSelected((sel) => selectRows(keys, sel, anchor.current, i, { shift: e.shiftKey, toggle: e.metaKey || e.ctrlKey }));
+    if (!e.shiftKey || anchor.current === null) anchor.current = i;
+  };
   const fkOf = (column: string) => fks.find((f) => f.columns.includes(column));
   const openReferenced = (fk: ForeignKeyDef, row: Cell[]) => {
     const to = followForeignKey(conn.driver, fk, schema, page.columns.map((c) => c.name), row);
@@ -120,12 +146,59 @@ export function TableDataTab({ tab }: { tab: Tab }) {
   };
 
   /** `value` undefined = a new row's untouched cell (column default). */
-  const cell = (key: string, col: Column, original: Cell, value: Cell | undefined, opts: { isNew?: boolean; isDeleted?: boolean; row?: Cell[] }) => {
+  const cell = (
+    key: string,
+    col: Column,
+    original: Cell,
+    value: Cell | undefined,
+    opts: { isNew?: boolean; isDeleted?: boolean; row?: Cell[]; vertical?: boolean },
+  ) => {
     const isEdited = !opts.isNew && edited.has(`${key}/${col.name}`);
     const binary = isBinary(col);
     const editable = canEdit && !opts.isDeleted && !binary;
     if (editing?.key === key && editing.col === col.name) {
       const shown = value == null ? "" : String(value);
+      const nullButton = (
+        <button
+          type="button"
+          title={t("data.setNull")}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setNull(key, col, original)}
+          onBlur={(e) => !e.currentTarget.parentElement?.contains(e.relatedTarget) && setEditing(null)}
+          className="absolute top-1/2 right-1 h-5 -translate-y-1/2 rounded border border-border-strong bg-panel px-1 font-mono text-[10px] text-muted hover:text-text focus-visible:text-text"
+        >
+          NULL
+        </button>
+      );
+      if (col.enumValues?.length)
+        return (
+          <td key={col.name} className="relative p-0">
+            <select
+              autoFocus
+              aria-label={col.name}
+              defaultValue={shown}
+              onFocus={(e) => {
+                try {
+                  e.currentTarget.showPicker();
+                } catch {
+                  // Older WebKit: the list opens on click or Space instead.
+                }
+              }}
+              onChange={(e) => commit(key, col, original, e.currentTarget.value, shown)}
+              onBlur={(e) => !e.currentTarget.parentElement?.contains(e.relatedTarget) && setEditing(null)}
+              onKeyDown={(e) => e.key === "Escape" && setEditing(null)}
+              className="h-7 w-full border-0 bg-surface pr-12 pl-3 text-text shadow-[inset_0_0_0_1.5px_var(--accent)] outline-none"
+            >
+              {!col.enumValues.includes(shown) && <option value={shown} disabled hidden />}
+              {col.enumValues.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+            {nullButton}
+          </td>
+        );
       return (
         <td key={col.name} className="relative p-0">
           <input
@@ -133,7 +206,7 @@ export function TableDataTab({ tab }: { tab: Tab }) {
             aria-label={col.name}
             defaultValue={shown}
             onBlur={(e) => {
-              if (e.relatedTarget === nullBtn.current) return;
+              if (e.currentTarget.parentElement?.contains(e.relatedTarget)) return; // moving to the NULL button
               if (e.currentTarget.dataset.cancel) setEditing(null);
               else commit(key, col, original, e.currentTarget.value, shown);
             }}
@@ -143,20 +216,10 @@ export function TableDataTab({ tab }: { tab: Tab }) {
             }}
             className={cn(
               "h-7 w-full border-0 bg-surface pr-12 pl-3 text-text shadow-[inset_0_0_0_1.5px_var(--accent)] outline-none",
-              col.numeric && "text-right font-mono",
+              col.numeric && (opts.vertical ? "font-mono" : "text-right font-mono"),
             )}
           />
-          <button
-            ref={nullBtn}
-            type="button"
-            title={t("data.setNull")}
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => setNull(key, col, original)}
-            onBlur={(e) => !e.currentTarget.parentElement?.contains(e.relatedTarget) && setEditing(null)}
-            className="absolute top-1/2 right-1 h-5 -translate-y-1/2 rounded border border-border-strong bg-panel px-1 font-mono text-[10px] text-muted hover:text-text focus-visible:text-text"
-          >
-            NULL
-          </button>
+          {nullButton}
         </td>
       );
     }
@@ -171,7 +234,8 @@ export function TableDataTab({ tab }: { tab: Tab }) {
         onKeyDown={(e) => editable && (e.key === "Enter" || e.key === "F2") && setEditing({ key, col: col.name })}
         className={cn(
           "truncate px-3",
-          col.numeric && "text-right font-mono",
+          col.numeric && (opts.vertical ? "font-mono" : "text-right font-mono"),
+          opts.isDeleted && "text-muted line-through",
           value === undefined ? "font-mono text-faint" : value === null && "text-faint italic",
           isEdited && "bg-accent-bg shadow-[inset_0_0_0_1.5px_var(--accent)]",
           fk && "group/fk relative pr-7",
@@ -259,7 +323,26 @@ export function TableDataTab({ tab }: { tab: Tab }) {
             </>
           )}
           <span className="flex-1" />
-          <span className="text-xs text-muted">{t("data.rowsLoaded", { n: rows.length })}</span>
+          <span className="text-xs text-muted">
+            {selected.size > 0 ? t("data.rowsSelected", { n: selected.size, total: rows.length }) : t("data.rowsLoaded", { n: rows.length })}
+          </span>
+          <IconButton label={t("data.refresh")} onClick={() => void load(sort, 0)} disabled={status === "loading"}>
+            <RotateCw size={14} />
+          </IconButton>
+          <button
+            type="button"
+            aria-pressed={recordView}
+            title={t("data.recordViewHint")}
+            disabled={!recordView && selected.size === 0}
+            onClick={() => setRecordView((v) => !v)}
+            className={cn(
+              "inline-flex h-7 items-center gap-1.5 rounded-[7px] border px-2 disabled:opacity-50",
+              recordView ? "border-accent bg-accent-bg text-text" : "border-transparent text-muted enabled:hover:bg-raised enabled:hover:text-text",
+            )}
+          >
+            <TableProperties size={14} aria-hidden="true" />
+            {t("data.recordView")}
+          </button>
           <Button disabled={!canEdit} onClick={() => dispatch({ type: "add", tempId: `new-${seq.current++}`, values: {} })}>
             <Plus size={14} aria-hidden="true" />
             {t("data.row")}
@@ -281,7 +364,26 @@ export function TableDataTab({ tab }: { tab: Tab }) {
             {t("data.noPk")}
           </p>
         )}
-        <div onScroll={(e) => onScroll(e.currentTarget)} className="min-h-0 flex-1 overflow-auto text-[12.5px] select-text">
+        {recordView && (
+          <RecordView
+            table={table}
+            columns={columns}
+            records={rows.flatMap((row, i) => {
+              const key = rowKey(row, i);
+              return selected.has(key) ? [{ row, i, key }] : [];
+            })}
+            isDeleted={(key) => deleted.has(key)}
+            renderCell={(key, c, j, row) => {
+              const k = `${key}/${c.name}`;
+              return cell(key, c, row[j], edited.has(k) ? edited.get(k)! : row[j], { isDeleted: deleted.has(key), row, vertical: true });
+            }}
+          />
+        )}
+        <div
+          hidden={recordView}
+          onScroll={(e) => onScroll(e.currentTarget)}
+          className="min-h-0 flex-1 overflow-auto text-[12.5px] select-text"
+        >
           <table
             aria-label={table}
             style={colWidths.tableWidth ? { width: colWidths.tableWidth + 64 } : undefined}
@@ -316,16 +418,7 @@ export function TableDataTab({ tab }: { tab: Tab }) {
                           c.numeric && !c.pk && !c.fk && "flex-row-reverse",
                         )}
                       >
-                        {(c.pk || c.fk) && (
-                          <span
-                            className={cn(
-                              "mr-0.5 shrink-0 rounded-[3px] border px-[3px] font-mono text-[9.5px] leading-[13px] font-normal",
-                              c.pk ? "border-stg text-stg" : "border-dev text-dev",
-                            )}
-                          >
-                            {c.pk ? "PK" : "FK"}
-                          </span>
-                        )}
+                        <KeyBadge col={c} />
                         <span className="truncate">{c.name}</span>
                         {sorted && (sorted.desc ? <ArrowDown size={12} className="shrink-0 text-accent" aria-hidden="true" /> : <ArrowUp size={12} className="shrink-0 text-accent" aria-hidden="true" />)}
                       </button>
@@ -343,10 +436,17 @@ export function TableDataTab({ tab }: { tab: Tab }) {
               {rows.map((row, i) => {
                 const key = rowKey(row, i);
                 const isDeleted = deleted.has(key);
+                const isSelected = selected.has(key);
                 return (
                   <tr
                     key={key}
-                    className={cn("group h-[29px] border-b border-border", isDeleted ? "bg-prod-bg text-muted line-through" : "hover:bg-surface")}
+                    aria-selected={isSelected}
+                    onMouseDown={(e) => e.shiftKey && e.preventDefault()}
+                    onClick={(e) => onRowClick(e, i)}
+                    className={cn(
+                      "group h-[29px] border-b border-border",
+                      isDeleted ? "bg-prod-bg text-muted line-through" : isSelected ? "bg-[var(--accent-sel)]" : "hover:bg-surface",
+                    )}
                   >
                     <td className={cn("px-2 text-right font-mono text-[11px]", isDeleted ? "text-prod" : "text-faint")}>
                       {canEdit && rowButton(key, isDeleted)} {i + 1}
@@ -398,6 +498,70 @@ export function TableDataTab({ tab }: { tab: Tab }) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+/** Selected rows turned sideways: one line per column, one value column per row (like DBeaver's record mode). */
+function RecordView({
+  table,
+  columns,
+  records,
+  isDeleted,
+  renderCell,
+}: {
+  table: string;
+  columns: Column[];
+  records: { row: Cell[]; i: number; key: string }[];
+  isDeleted: (key: string) => boolean;
+  renderCell: (key: string, col: Column, j: number, row: Cell[]) => ReactNode;
+}) {
+  const t = useT();
+  if (records.length === 0) return <p className="m-0 flex-1 py-10 text-center text-muted">{t("data.recordViewEmpty")}</p>;
+  return (
+    <div className="min-h-0 flex-1 overflow-auto text-[12.5px] select-text">
+      <table
+        aria-label={t("data.recordViewOf", { table })}
+        style={{ width: 240 + records.length * 280 }}
+        className="table-fixed border-collapse min-w-full"
+      >
+        <colgroup>
+          <col style={{ width: 240 }} />
+          {records.map((r) => (
+            <col key={r.key} />
+          ))}
+        </colgroup>
+        <thead className="sticky top-0 z-[2] bg-panel text-xs">
+          <tr className="h-8 shadow-[inset_0_-1px_0_var(--border-strong)]">
+            <th scope="col" className="sticky left-0 z-[1] bg-panel px-3 text-left font-normal text-faint">
+              {t("data.column")}
+            </th>
+            {records.map((r) => (
+              <th
+                key={r.key}
+                scope="col"
+                className={cn("px-3 text-left font-mono font-normal", isDeleted(r.key) ? "text-prod line-through" : "text-faint")}
+              >
+                #{r.i + 1}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {columns.map((c, j) => (
+            <tr key={c.name} className="h-[29px] border-b border-border hover:bg-surface">
+              <th scope="row" title={`${c.name} · ${c.type}`} className="sticky left-0 bg-panel px-3 text-left font-medium">
+                <span className="flex items-center gap-1">
+                  <KeyBadge col={c} />
+                  <span className="truncate">{c.name}</span>
+                  <span className="ml-auto shrink-0 pl-2 font-mono text-[11px] font-normal text-faint">{c.type}</span>
+                </span>
+              </th>
+              {records.map((r) => renderCell(r.key, c, j, r.row))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn rows_are_compact_and_truncated() {
-        let col = |n: &str| Column { name: n.into(), type_name: "text".into(), numeric: false, pk: false, fk: false };
+        let col = |n: &str| Column { name: n.into(), type_name: "text".into(), numeric: false, pk: false, fk: false, enum_values: vec![] };
         let r = StatementResult {
             sql: "SELECT".into(),
             columns: vec![col("id"), col("note")],

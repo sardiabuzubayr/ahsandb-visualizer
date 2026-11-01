@@ -84,7 +84,7 @@ pub(crate) fn columns<C: sqlx::Column>(cols: &[C]) -> Vec<Column> {
     cols.iter()
         .map(|c| {
             let type_name = c.type_info().name().to_lowercase();
-            Column { name: c.name().to_string(), numeric: is_numeric(&type_name), type_name, pk: false, fk: false }
+            Column { name: c.name().to_string(), numeric: is_numeric(&type_name), type_name, pk: false, fk: false, enum_values: vec![] }
         })
         .collect()
 }

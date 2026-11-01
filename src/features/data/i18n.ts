@@ -36,6 +36,13 @@ const en = {
   "data.noPk": "This table has no primary key — editing is disabled.",
   "data.setNull": "Set NULL",
   "data.readOnlyCell": "Binary cells are read-only",
+  "data.refresh": "Refresh",
+  "data.rowsSelected": "{n} of {total} rows selected",
+  "data.recordView": "Record",
+  "data.recordViewHint": "Show selected rows vertically: column names on the left, values on the right. Click a row to select it, ⌘/Ctrl-click to add more, Shift-click for a range.",
+  "data.recordViewEmpty": "No rows selected. Turn off Record view, then click the rows you want to see.",
+  "data.recordViewOf": "Selected rows of {table}",
+  "data.column": "Column",
 };
 
 const id: typeof en = {
@@ -76,6 +83,13 @@ const id: typeof en = {
   "data.noPk": "Tabel ini tidak punya primary key — pengeditan dinonaktifkan.",
   "data.setNull": "Jadikan NULL",
   "data.readOnlyCell": "Sel biner hanya-baca",
+  "data.refresh": "Muat ulang",
+  "data.rowsSelected": "{n} dari {total} baris dipilih",
+  "data.recordView": "Record",
+  "data.recordViewHint": "Tampilkan baris terpilih secara vertikal: nama kolom di kiri, nilai di kanan. Klik baris untuk memilih, ⌘/Ctrl-klik untuk menambah, Shift-klik untuk rentang.",
+  "data.recordViewEmpty": "Belum ada baris yang dipilih. Matikan tampilan Record, lalu klik baris yang ingin dilihat.",
+  "data.recordViewOf": "Baris terpilih dari {table}",
+  "data.column": "Kolom",
 };
 
 export default { en, id };

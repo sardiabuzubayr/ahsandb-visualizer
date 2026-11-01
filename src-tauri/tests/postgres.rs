@@ -138,3 +138,16 @@ async fn metadata_and_paging() {
     let bad = Some(OrderBy { column: "nope".into(), desc: false });
     assert!(matches!(page::table_page(&pool, "public", "orders", bad, None, 0, 2).await, Err(AppError::Query(_))));
 }
+
+#[tokio::test]
+async fn enum_column_values() {
+    let Some(c) = pg() else { return };
+    let (mgr, pool) = open(&c).await;
+    let t = format!("ahsandb_t_{}", rand_suffix());
+    exec(&mgr, &pool, &c, &format!("CREATE TYPE {t}_mood AS ENUM ('sad', 'it''s ok', 'happy'); CREATE TABLE {t} (id int PRIMARY KEY, mood {t}_mood, note text)")).await.unwrap();
+    let cols = meta::table_columns(&pool, "public", &t).await;
+    exec(&mgr, &pool, &c, &format!("DROP TABLE {t}; DROP TYPE {t}_mood")).await.unwrap();
+    let cols = cols.unwrap();
+    assert_eq!(cols[1].enum_values, ["sad", "it's ok", "happy"]);
+    assert!(cols[0].enum_values.is_empty() && cols[2].enum_values.is_empty());
+}

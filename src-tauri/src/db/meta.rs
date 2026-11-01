@@ -221,7 +221,8 @@ async fn column_rows(pool: &Pool, schema: &str, table: &str) -> AppResult<Vec<Ve
         Pool::Pg(_) => text_rows(pool,
             "SELECT c.relname::text, a.attname::text, t.typname::text,
                CASE WHEN EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'p' AND a.attnum = ANY(k.conkey)) THEN '1' ELSE '0' END,
-               CASE WHEN EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'f' AND a.attnum = ANY(k.conkey)) THEN '1' ELSE '0' END
+               CASE WHEN EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'f' AND a.attnum = ANY(k.conkey)) THEN '1' ELSE '0' END,
+               COALESCE((SELECT json_agg(e.enumlabel ORDER BY e.enumsortorder) FROM pg_enum e WHERE e.enumtypid = a.atttypid)::text, '')
              FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
              JOIN pg_type t ON t.oid = a.atttypid
              WHERE n.nspname = $1 AND (c.relname = $2 OR $2 = '') AND c.relkind IN ('r','p','v','m','f')
@@ -231,14 +232,15 @@ async fn column_rows(pool: &Pool, schema: &str, table: &str) -> AppResult<Vec<Ve
             "SELECT c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE,
                CASE WHEN c.COLUMN_KEY = 'PRI' THEN '1' ELSE '0' END,
                CASE WHEN EXISTS (SELECT 1 FROM information_schema.KEY_COLUMN_USAGE k WHERE k.TABLE_SCHEMA = c.TABLE_SCHEMA
-                 AND k.TABLE_NAME = c.TABLE_NAME AND k.COLUMN_NAME = c.COLUMN_NAME AND k.REFERENCED_TABLE_NAME IS NOT NULL) THEN '1' ELSE '0' END
+                 AND k.TABLE_NAME = c.TABLE_NAME AND k.COLUMN_NAME = c.COLUMN_NAME AND k.REFERENCED_TABLE_NAME IS NOT NULL) THEN '1' ELSE '0' END,
+               CASE WHEN c.DATA_TYPE = 'enum' THEN c.COLUMN_TYPE ELSE '' END
              FROM information_schema.COLUMNS c WHERE c.TABLE_SCHEMA = ? AND (c.TABLE_NAME = ? OR ? = '')
              ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION", &[schema, table, table]).await,
         Pool::Lite(_) => {
             let schema = lite_schema(schema);
             text_rows(pool, &format!(
                 "SELECT m.name, p.name, lower(p.type), CASE WHEN p.pk > 0 THEN '1' ELSE '0' END,
-                   CASE WHEN EXISTS (SELECT 1 FROM pragma_foreign_key_list(m.name, ?1) f WHERE f.\"from\" = p.name) THEN '1' ELSE '0' END
+                   CASE WHEN EXISTS (SELECT 1 FROM pragma_foreign_key_list(m.name, ?1) f WHERE f.\"from\" = p.name) THEN '1' ELSE '0' END, ''
                  FROM {}.sqlite_master m JOIN pragma_table_info(m.name, ?1) p
                  WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND (m.name = ?2 OR ?2 = '')
                  ORDER BY m.name, p.cid", quote(pool, schema)), &[schema, table]).await
@@ -256,9 +258,35 @@ pub async fn table_columns(pool: &Pool, schema: &str, table: &str) -> AppResult<
         .into_iter()
         .map(|r| {
             let type_name = r[2].to_lowercase();
-            Column { name: r[1].clone(), numeric: is_numeric(&type_name), type_name, pk: r[3] == "1", fk: r[4] == "1" }
+            Column { name: r[1].clone(), numeric: is_numeric(&type_name), type_name, pk: r[3] == "1", fk: r[4] == "1", enum_values: enum_values(&r[5]) }
         })
         .collect())
+}
+
+/// Parses PostgreSQL's JSON label array (`["a","b"]`) or MySQL's column type (`enum('a','it''s')`); anything else → none.
+fn enum_values(raw: &str) -> Vec<String> {
+    if raw.starts_with('[') {
+        return serde_json::from_str(raw).unwrap_or_default();
+    }
+    let Some(body) = raw.strip_prefix("enum(").and_then(|b| b.strip_suffix(')')) else { return vec![] };
+    let (mut out, mut cur, mut quoted) = (vec![], String::new(), false);
+    let mut chars = body.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match (ch, quoted) {
+            ('\'', false) => quoted = true,
+            ('\'', true) if chars.peek() == Some(&'\'') => {
+                cur.push('\'');
+                chars.next();
+            }
+            ('\'', true) => {
+                quoted = false;
+                out.push(std::mem::take(&mut cur));
+            }
+            (c, true) => cur.push(c),
+            _ => {} // separators between quoted values
+        }
+    }
+    out
 }
 
 pub async fn er_model(pool: &Pool, schema: &str) -> AppResult<ErModel> {
@@ -359,6 +387,15 @@ pub async fn completion_schema(pool: &Pool, conn: &Connection) -> AppResult<Hash
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn enum_values_parse() {
+        assert_eq!(super::enum_values(r#"["male","fe\"male"]"#), ["male", "fe\"male"]);
+        assert_eq!(super::enum_values("enum('a','it''s','x,y')"), ["a", "it's", "x,y"]);
+        assert_eq!(super::enum_values("enum('')"), [""]);
+        assert!(super::enum_values("").is_empty());
+        assert!(super::enum_values("varchar(10)").is_empty());
+    }
+
     #[test]
     fn short_counts() {
         for (n, s) in [("-1", ""), ("0", ""), ("860", "860"), ("1000", "1k"), ("2400", "2.4k"), ("12400", "12.4k"), ("1200000", "1.2M")] {

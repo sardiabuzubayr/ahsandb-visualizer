@@ -230,6 +230,9 @@ pub struct Column {
     pub pk: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fk: bool,
+    /// Allowed values of an enum column (PostgreSQL enum types, MySQL/MariaDB `ENUM`), in declared order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enum_values: Vec<String>,
 }
 
 /// A cell: JSON null, number (integers within ±2^53 and floats) or string (everything else,

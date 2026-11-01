@@ -112,6 +112,8 @@ export interface Column {
   numeric?: boolean;
   pk?: boolean;
   fk?: boolean;
+  /** Allowed values of an enum column, in declared order. */
+  enumValues?: string[];
 }
 
 export type Cell = string | number | null;

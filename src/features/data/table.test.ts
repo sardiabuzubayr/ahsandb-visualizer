@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from "vitest";
-import { nextSort, splitTarget, followForeignKey, sqlLiteral } from "./table";
+import { nextSort, splitTarget, followForeignKey, selectRows, sqlLiteral } from "./table";
 
 test("nextSort cycles asc → desc → none and restarts on another column", () => {
   const asc = nextSort(null, "total");
@@ -38,4 +38,15 @@ describe("following a foreign key", () => {
     expect(sqlLiteral("postgres", "a\\b")).toBe("'a\\b'");
     expect(sqlLiteral("sqlite", 1.5)).toBe("1.5");
   });
+});
+
+test("selectRows: click selects one, ⌘ toggles, Shift selects a range from the anchor", () => {
+  const keys = ["a", "b", "c", "d"];
+  const none = { shift: false, toggle: false };
+  expect([...selectRows(keys, new Set(["a", "b"]), null, 2, none)]).toEqual(["c"]);
+  const toggled = selectRows(keys, new Set(["a"]), 0, 2, { shift: false, toggle: true });
+  expect([...toggled]).toEqual(["a", "c"]);
+  expect([...selectRows(keys, toggled, 2, 0, { shift: false, toggle: true })]).toEqual(["c"]);
+  expect([...selectRows(keys, new Set(["d"]), 3, 1, { shift: true, toggle: false })]).toEqual(["b", "c", "d"]);
+  expect([...selectRows(keys, new Set(), null, 1, { shift: true, toggle: false })]).toEqual(["b"]);
 });
