@@ -34,7 +34,7 @@ export interface ConnForm {
   aiAccess: AiAccess;
 }
 
-export type FormField = "name" | "host" | "port" | "file";
+export type FormField = "name" | "host" | "port" | "file" | "database";
 /** Values are i18n keys. */
 export type FormErrors = Partial<Record<FormField, string>>;
 
@@ -71,7 +71,9 @@ export const emptyForm: ConnForm = {
 };
 
 export function applyDriverChange(form: ConnForm, driver: Driver): ConnForm {
-  return { ...form, driver, port: form.portTouched ? form.port : defaultPort(driver) };
+  // Redis can't negotiate TLS, so "prefer" has no meaning there.
+  const sslMode = driver === "redis" && form.sslMode === "prefer" ? "disable" : form.sslMode;
+  return { ...form, driver, sslMode, port: form.portTouched ? form.port : defaultPort(driver) };
 }
 
 export function validate(f: ConnForm): FormErrors {
@@ -84,6 +86,7 @@ export function validate(f: ConnForm): FormErrors {
   if (!f.host.trim()) e.host = "conn.err.host";
   const port = Number(f.port);
   if (!/^\d+$/.test(f.port.trim()) || port < 1 || port > 65535) e.port = "conn.err.port";
+  if (f.driver === "redis" && !/^\d*$/.test(f.database.trim())) e.database = "conn.err.redisDb";
   return e;
 }
 

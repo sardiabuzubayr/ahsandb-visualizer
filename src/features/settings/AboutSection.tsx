@@ -11,6 +11,7 @@ const LIBRARIES: [name: string, license: string][] = [
   ["React", "MIT"],
   ["sqlx", "Apache-2.0 / MIT"],
   ["russh", "Apache-2.0"],
+  ["redis-rs", "BSD-3-Clause"],
   ["CodeMirror", "MIT"],
   ["React Flow", "MIT"],
   ["ECharts", "Apache-2.0"],

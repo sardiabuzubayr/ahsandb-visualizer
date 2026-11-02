@@ -74,6 +74,10 @@ fn not_supported_sqlite<T>(what: &str) -> AppResult<T> {
     Err(AppError::NotSupported(format!("SQLite has no {what}")))
 }
 
+fn not_sql<T>() -> AppResult<T> {
+    Err(AppError::NotSupported("Redis has no SQL objects".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

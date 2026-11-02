@@ -3,6 +3,7 @@ mod commands;
 pub mod db;
 pub mod ddl;
 pub mod error;
+pub mod kv;
 pub mod model;
 pub mod objects;
 pub mod secrets;
@@ -93,6 +94,12 @@ pub fn run() {
             commands::read_text_file,
             commands::write_text_file,
             commands::write_base64_file,
+            commands::kv_scan,
+            commands::kv_get,
+            commands::kv_edit,
+            commands::kv_command,
+            commands::kv_info,
+            commands::kv_memory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

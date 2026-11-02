@@ -37,6 +37,8 @@ pub struct Running {
 #[derive(Default)]
 pub struct Manager {
     pub pools: Mutex<HashMap<String, Arc<Pool>>>,
+    /// Redis connections by IPC id (`<connId>` or `<connId>@<db index>`).
+    pub kv: Mutex<HashMap<String, crate::kv::Conn>>,
     pub running: Mutex<HashMap<String, Running>>,
     /// SSH tunnels of open connections that use one.
     pub tunnels: Mutex<HashMap<String, crate::ssh::Tunnel>>,
@@ -81,6 +83,7 @@ pub async fn connect(c: &Connection, password: Option<&str>, tunnel_port: Option
     // A direct first connection reports the real error (refused, auth); the pool would only say
     // "timed out" because it retries refused connections until acquire_timeout.
     match c.driver {
+        Driver::Redis => Err(AppError::Internal("Redis connections don't open a SQL pool".into())),
         Driver::Postgres => {
             let mut o = PgConnectOptions::new().ssl_mode(match c.ssl_mode {
                 SslMode::Disable => PgSslMode::Disable,

@@ -18,6 +18,7 @@ export const TYPE_SUGGESTIONS: Record<Driver, string[]> = {
     "longtext", "date", "datetime", "timestamp", "time", "json", "blob",
   ],
   sqlite: ["integer", "real", "text", "blob", "numeric"],
+  redis: [],
 };
 
 export const ON_DELETE = ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"];

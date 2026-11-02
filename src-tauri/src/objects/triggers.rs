@@ -1,5 +1,5 @@
 //! Triggers: read definition, generate save/drop SQL.
-use super::{MY_DDL_WARNING, is_my, text_rows};
+use super::{MY_DDL_WARNING, is_my, not_sql, text_rows};
 use crate::db::Pool;
 use crate::db::preview::{Plan, PlannedStatement};
 use crate::ddl::{qualified, quote_ident};
@@ -162,6 +162,9 @@ fn parse_sqlite(sql: &str, name: &str) -> (String, String, Option<String>, Strin
 }
 
 fn validate(d: Driver, t: &Trigger) -> AppResult<()> {
+    if d == Driver::Redis {
+        return not_sql();
+    }
     let err = |m: &str| Err(AppError::Query(m.into()));
     if t.name.trim().is_empty() {
         return err("The trigger needs a name");
@@ -216,7 +219,7 @@ fn create_sql(d: Driver, t: &Trigger, or_replace: bool) -> String {
             )
         }
         // SQLite: the table of a trigger can't be schema-qualified (it lives in the trigger's schema).
-        Driver::Sqlite => format!(
+        Driver::Sqlite | Driver::Redis => format!(
             "CREATE TRIGGER {} {} {events} ON {} FOR EACH ROW{when}\n{}",
             qualified(d, &t.schema, &t.name),
             t.timing,
@@ -261,7 +264,8 @@ pub fn plan_trigger(driver: Driver, original: Option<&Trigger>, target: Option<&
     validate(driver, &t)?;
     let push = |plan: &mut Plan, sql: String| plan.statements.push(PlannedStatement::new(sql));
     match driver {
-        Driver::Postgres | Driver::Sqlite => {
+        // `validate` already rejected Redis.
+        Driver::Postgres | Driver::Sqlite | Driver::Redis => {
             if let Some(o) = original {
                 push(&mut plan, drop_sql(driver, o, true));
             }

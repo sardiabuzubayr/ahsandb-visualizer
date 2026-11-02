@@ -1,5 +1,5 @@
 //! Views: read definition, generate save SQL; DDL text of sequences and events.
-use super::{MY_DDL_WARNING, is_my, lit, text_rows};
+use super::{MY_DDL_WARNING, is_my, lit, not_sql, text_rows};
 use crate::db::Pool;
 use crate::db::preview::{Plan, PlannedStatement};
 use crate::ddl::{qualified, quote_ident};
@@ -100,6 +100,7 @@ pub fn plan_view(driver: Driver, original: Option<&ViewDef>, target: &ViewDef) -
     let mut plan = Plan { transactional: !is_my(driver), ..Default::default() };
     let mut push = |sql: String| plan.statements.push(PlannedStatement::new(sql));
     match driver {
+        Driver::Redis => return not_sql(),
         Driver::Postgres => {
             if let Some(o) = renamed {
                 push(format!("ALTER VIEW {} RENAME TO {}", qualified(driver, &o.schema, &o.name), quote_ident(driver, &target.name)));

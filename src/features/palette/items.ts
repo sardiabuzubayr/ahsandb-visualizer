@@ -64,7 +64,7 @@ export function actionItems(s: AppState, t: TFn, subject?: PaletteItem): Palette
   if (active) {
     items.push({
       id: "a:sql",
-      label: t("palette.newSql", { name: active.name }),
+      label: t(active.driver === "redis" ? "palette.console" : "palette.newSql", { name: active.name }),
       icon: CodeXml,
       kbd: "⌘T",
       run: [{ type: "openTab", kind: "sql", connectionId: active.id, title: "untitled.sql" }],
@@ -83,7 +83,7 @@ export function actionItems(s: AppState, t: TFn, subject?: PaletteItem): Palette
       });
     }
   }
-  if (active?.connected) {
+  if (active?.connected && active.driver !== "redis") {
     const connectionId = active.id;
     items.push(
       { id: "a:exportDb", label: t("palette.exportDb", { name: active.name }), icon: Download, run: [{ type: "openDialog", dialog: "export", connectionId }] },

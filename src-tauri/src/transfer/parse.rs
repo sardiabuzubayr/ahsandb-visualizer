@@ -452,7 +452,7 @@ impl Infer {
         match driver {
             Driver::Postgres => pg,
             Driver::Mysql | Driver::Mariadb => my,
-            Driver::Sqlite => lite,
+            Driver::Sqlite | Driver::Redis => lite,
         }
         .to_string()
     }

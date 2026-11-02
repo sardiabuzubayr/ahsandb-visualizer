@@ -102,3 +102,13 @@ test("opening the same .sql file again focuses its tab; Save as renames the tab"
   const s3 = reducer(s2, { type: "setTabFile", id: s1.activeTabId!, filePath: "/tmp/r.sql", title: "r.sql" });
   expect(s3.tabs.find((t) => t.id === s1.activeTabId)).toMatchObject({ title: "r.sql", filePath: "/tmp/r.sql" });
 });
+
+test("a SQL tab on a Redis connection opens its console instead (once per database)", () => {
+  const redis = { ...base.connections[0], id: "cache", driver: "redis" as const, database: "2" };
+  const s0 = { ...base, connections: [...base.connections, redis] };
+  const s1 = reducer(s0, { type: "openTab", kind: "sql", connectionId: "cache", title: "untitled.sql" });
+  const tab = s1.tabs.find((t) => t.id === s1.activeTabId)!;
+  expect(tab).toMatchObject({ kind: "console", connectionId: "cache", database: "2", target: "db2" });
+  const s2 = reducer(s1, { type: "openTab", kind: "sql", connectionId: "cache", title: "untitled.sql" });
+  expect(s2.tabs).toHaveLength(s1.tabs.length);
+});

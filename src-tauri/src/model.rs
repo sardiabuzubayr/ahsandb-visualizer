@@ -9,6 +9,20 @@ pub enum Driver {
     Mysql,
     Mariadb,
     Sqlite,
+    /// Redis (or a compatible server such as Valkey), standalone.
+    Redis,
+}
+
+impl Driver {
+    /// Server port used when the connection leaves it empty.
+    pub fn default_port(self) -> u16 {
+        match self {
+            Driver::Postgres => 5432,
+            Driver::Mysql | Driver::Mariadb => 3306,
+            Driver::Redis => 6379,
+            Driver::Sqlite => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +206,8 @@ pub enum NodeKind {
     Event,
     Role,
     More,
+    /// Redis logical database (`db0`, `db1`, …); `count` = keys.
+    Keyspace,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -939,6 +955,121 @@ pub struct AuditEntry {
     pub outcome: String,
 }
 
+// ---------- Redis ----------
+
+/// One key from a SCAN page. `ttl_ms`: -1 = no expiry, -2 = gone by the time it was read.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KvKey {
+    pub key: String,
+    #[serde(rename = "type")]
+    pub type_name: String,
+    pub ttl_ms: i64,
+    /// Bytes from `MEMORY USAGE`; `None` when the server refuses it (ACL, Redis < 4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<u64>,
+}
+
+/// A SCAN page; `cursor` "0" = the scan is complete.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvScanPage {
+    pub cursor: String,
+    pub keys: Vec<KvKey>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KvStreamEntry {
+    pub id: String,
+    pub fields: Vec<(String, String)>,
+}
+
+/// A key's value by type. Texts that aren't UTF-8 are shown lossily and flagged `binary` (read-only).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum KvValue {
+    /// The key doesn't exist (any more).
+    None,
+    String { value: String, binary: bool },
+    Hash { entries: Vec<(String, String)> },
+    List { items: Vec<String> },
+    Set { members: Vec<String> },
+    Zset { entries: Vec<(String, f64)> },
+    Stream { entries: Vec<KvStreamEntry> },
+    /// Module or newer types (JSON, vector sets…): use the console.
+    Other,
+}
+
+/// A key with its value. `length` = bytes (string) or items (collections); `truncated` = only the
+/// first items (or bytes) were loaded; `binary` = some text wasn't UTF-8, so editing is off.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvEntry {
+    pub key: String,
+    #[serde(rename = "type")]
+    pub type_name: String,
+    pub ttl_ms: i64,
+    pub length: u64,
+    pub truncated: bool,
+    pub binary: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<u64>,
+    pub value: KvValue,
+}
+
+/// A change from the key browser. `replace` = the old field/member being renamed (removed atomically).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum KvEdit {
+    SetString { key: String, value: String },
+    HashSet { key: String, field: String, value: String, #[serde(default)] replace: Option<String> },
+    HashDel { key: String, field: String },
+    ListSet { key: String, index: i64, value: String },
+    ListPush { key: String, value: String, head: bool },
+    ListRemove { key: String, value: String },
+    SetAdd { key: String, member: String, #[serde(default)] replace: Option<String> },
+    SetRemove { key: String, member: String },
+    ZsetAdd { key: String, member: String, score: f64, #[serde(default)] replace: Option<String> },
+    ZsetRemove { key: String, member: String },
+    StreamAdd { key: String, fields: Vec<(String, String)> },
+    StreamDel { key: String, id: String },
+    /// `ttl_secs` None = remove the expiry.
+    Expire { key: String, ttl_secs: Option<i64> },
+    /// Fails if `to` exists (RENAMENX).
+    Rename { key: String, to: String },
+    Delete { keys: Vec<String> },
+    /// New key (fails if it exists). `kind`: string, hash, list, set, zset, stream; `field` for hash/stream, `score` for zset.
+    Create {
+        key: String,
+        kind: String,
+        #[serde(default)]
+        field: Option<String>,
+        value: String,
+        #[serde(default)]
+        score: Option<f64>,
+        #[serde(default)]
+        ttl_secs: Option<i64>,
+    },
+}
+
+/// Console reply formatted like redis-cli.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvReply {
+    pub text: String,
+    pub error: bool,
+    pub elapsed_ms: u64,
+}
+
+/// `INFO` parsed into its sections (`# Server`, `# Memory`, …) in server order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KvInfoSection {
+    pub name: String,
+    pub fields: Vec<(String, String)>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -958,6 +1089,36 @@ mod tests {
         assert!(c.ssh.is_none());
         let s: Secrets = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(s.password.is_none());
+    }
+
+    #[test]
+    fn redis_ipc_shapes_match_the_frontend() {
+        // Shapes as src/types.ts sends them.
+        let e: KvEdit = serde_json::from_value(serde_json::json!({"op": "expire", "key": "k", "ttlSecs": null})).unwrap();
+        assert!(matches!(e, KvEdit::Expire { ttl_secs: None, .. }));
+        let e: KvEdit = serde_json::from_value(serde_json::json!({"op": "hashSet", "key": "k", "field": "f", "value": "v", "replace": "old"})).unwrap();
+        assert!(matches!(e, KvEdit::HashSet { replace: Some(r), .. } if r == "old"));
+        let e: KvEdit = serde_json::from_value(serde_json::json!({"op": "create", "key": "k", "kind": "zset", "value": "m", "score": 2.5, "ttlSecs": 60})).unwrap();
+        assert!(matches!(e, KvEdit::Create { score: Some(_), ttl_secs: Some(60), field: None, .. }));
+        let e: KvEdit = serde_json::from_value(serde_json::json!({"op": "streamAdd", "key": "k", "fields": [["a", "1"]]})).unwrap();
+        assert!(matches!(e, KvEdit::StreamAdd { fields, .. } if fields == [("a".to_string(), "1".to_string())]));
+        let entry = KvEntry {
+            key: "k".into(),
+            type_name: "zset".into(),
+            ttl_ms: -1,
+            length: 1,
+            truncated: false,
+            binary: false,
+            memory: Some(72),
+            value: KvValue::Zset { entries: vec![("m".into(), 2.5)] },
+        };
+        assert_eq!(
+            serde_json::to_value(&entry).unwrap(),
+            serde_json::json!({"key": "k", "type": "zset", "ttlMs": -1, "length": 1, "truncated": false, "binary": false, "memory": 72, "value": {"kind": "zset", "entries": [["m", 2.5]]}})
+        );
+        let s = serde_json::to_value(KvValue::String { value: "v".into(), binary: false }).unwrap();
+        assert_eq!(s, serde_json::json!({"kind": "string", "value": "v", "binary": false}));
+        assert_eq!(serde_json::to_value(KvValue::None).unwrap(), serde_json::json!({"kind": "none"}));
     }
 
     #[test]

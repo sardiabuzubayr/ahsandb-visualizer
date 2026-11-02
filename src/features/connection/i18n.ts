@@ -75,6 +75,9 @@ const en = {
   "conn.err.host": "Enter a host",
   "conn.err.port": "Port must be a number from 1 to 65535",
   "conn.err.file": "Choose a database file",
+  "conn.err.redisDb": "A Redis database is a number (0, 1, …)",
+  "conn.redisDbHint": "number",
+  "conn.redisDbTitle": "Database number to open (0 when empty). Other databases open from the sidebar.",
 };
 
 const id: typeof en = {
@@ -154,6 +157,9 @@ const id: typeof en = {
   "conn.err.host": "Isi host",
   "conn.err.port": "Port harus angka 1 sampai 65535",
   "conn.err.file": "Pilih file database",
+  "conn.err.redisDb": "Database Redis berupa angka (0, 1, …)",
+  "conn.redisDbHint": "angka",
+  "conn.redisDbTitle": "Nomor database yang dibuka (0 jika kosong). Database lain dibuka dari sidebar.",
 };
 
 export default { en, id };

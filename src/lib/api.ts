@@ -45,6 +45,11 @@ import type {
   StatementResult,
   TablePage,
   TestResult,
+  KvEdit,
+  KvEntry,
+  KvInfoSection,
+  KvReply,
+  KvScanPage,
 } from "../types";
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -163,6 +168,18 @@ export interface Api {
   writeTextFile(path: string, contents: string): Promise<void>;
   /** Binary file (e.g. PNG) as base64. */
   writeBase64File(path: string, data: string): Promise<void>;
+  // Redis. `id` may be scoped to a database index (`<connId>@3`).
+  /** Keys matching a glob pattern with type and TTL; `hasTtl` true/false = only keys with/without an expiry.
+   *  Continue from the returned cursor ("0" = done). */
+  kvScan(id: string, cursor: string, pattern: string, typeFilter: string | null, hasTtl: boolean | null, count: number): Promise<KvScanPage>;
+  kvGet(id: string, key: string): Promise<KvEntry>;
+  /** Read-only connections → readOnly; production without `confirmed` → needsConfirmation (detail = commands). */
+  kvEdit(id: string, edit: KvEdit, confirmed: boolean): Promise<void>;
+  /** One console line. Blocked commands → query error; writes follow the same read-only / production rules. */
+  kvCommand(id: string, line: string, confirmed: boolean): Promise<KvReply>;
+  kvInfo(id: string): Promise<KvInfoSection[]>;
+  /** Memory the whole server uses (Redis has no per-database figure). */
+  kvMemory(id: string): Promise<number | null>;
 }
 
 const real: Api = {
@@ -228,6 +245,12 @@ const real: Api = {
   readTextFile: (path) => call("read_text_file", { path }),
   writeTextFile: (path, contents) => call("write_text_file", { path, contents }),
   writeBase64File: (path, data) => call("write_base64_file", { path, data }),
+  kvScan: (id, cursor, pattern, typeFilter, hasTtl, count) => call("kv_scan", { id, cursor, pattern, typeFilter, hasTtl, count }),
+  kvGet: (id, key) => call("kv_get", { id, key }),
+  kvEdit: (id, edit, confirmed) => call("kv_edit", { id, edit, confirmed }),
+  kvCommand: (id, line, confirmed) => call("kv_command", { id, line, confirmed }),
+  kvInfo: (id) => call("kv_info", { id }),
+  kvMemory: (id) => call("kv_memory", { id }),
 };
 
 // Development in a plain browser uses the mock; production builds drop it (import.meta.env.DEV is false there).

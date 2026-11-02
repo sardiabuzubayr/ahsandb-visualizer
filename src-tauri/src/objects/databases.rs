@@ -1,6 +1,6 @@
 //! Databases: CREATE / RENAME / DROP DATABASE plans. All non-transactional (PostgreSQL can't run
 //! them in a transaction block; MySQL/MariaDB DDL commits anyway). SQLite → `NotSupported`.
-use super::{is_my, not_supported_sqlite};
+use super::{is_my, not_sql, not_supported_sqlite};
 use crate::db::preview::{Plan, PlannedStatement};
 use crate::ddl::quote_ident;
 use crate::error::{AppError, AppResult};
@@ -17,7 +17,7 @@ pub fn is_system(driver: Driver, name: &str) -> bool {
         Driver::Mysql | Driver::Mariadb => {
             ["mysql", "information_schema", "performance_schema", "sys"].iter().any(|s| s.eq_ignore_ascii_case(name))
         }
-        Driver::Sqlite => false,
+        Driver::Sqlite | Driver::Redis => false,
     }
 }
 
@@ -49,6 +49,7 @@ pub fn plan_create_database(driver: Driver, def: &DatabaseDef) -> AppResult<Plan
 pub fn plan_rename_database(driver: Driver, base: Option<&str>, from: &str, to: &str) -> AppResult<Plan> {
     match driver {
         Driver::Sqlite => return not_supported_sqlite("databases to rename"),
+        Driver::Redis => return not_sql(),
         Driver::Mysql | Driver::Mariadb => {
             return Err(AppError::NotSupported(
                 "MySQL/MariaDB can't rename a database. Create a new database and move the tables into it instead.".into(),

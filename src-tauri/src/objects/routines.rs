@@ -1,5 +1,5 @@
 //! Functions and stored procedures: read definition, generate save SQL, build the call for "Run".
-use super::{MY_DDL_WARNING, cell_lit, is_my, not_supported_sqlite, q, split_list, text_rows};
+use super::{MY_DDL_WARNING, cell_lit, is_my, not_sql, not_supported_sqlite, q, split_list, text_rows};
 use crate::db::preview::{Plan, PlannedStatement};
 use crate::db::Pool;
 use crate::error::{AppError, AppResult};
@@ -282,6 +282,7 @@ pub fn plan_routine(driver: Driver, original: Option<&Routine>, routine: &Routin
             plan.warnings.push(MY_DDL_WARNING.into());
         }
         Driver::Sqlite => return not_supported_sqlite("stored routines"),
+        Driver::Redis => return not_sql(),
     }
     Ok(plan)
 }

@@ -8,11 +8,12 @@ use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ahsandb_lib::ai::agent::{self, AgentState, Emit, Turn, run_turn};
+use ahsandb_lib::ai::agent::{self, AgentState, Emit, Target, Turn, run_turn};
 use ahsandb_lib::ai::risk;
 use ahsandb_lib::ai::{ChatItem, ChatModel, ChatRequest, ChatResponse, StopKind, ToolCall, ToolResult};
 use ahsandb_lib::db::{self, Manager, Pool};
 use ahsandb_lib::error::{AppError, AppResult};
+use ahsandb_lib::kv;
 use ahsandb_lib::model::*;
 use ahsandb_lib::store::Store;
 use common::*;
@@ -85,6 +86,8 @@ struct Env {
     pool: Arc<Pool>,
     conn: Connection,
     agent: AgentState,
+    /// Set for Redis turns (the SQLite pool then goes unused).
+    kv: Option<kv::Conn>,
 }
 
 const SEED: &str = "
@@ -111,7 +114,17 @@ async fn sqlite(access: AiAccess, env: Env_, read_only: bool) -> Env {
     let conn = Connection { ai_access: access, env: env.0, read_only, ..base };
     let (mgr, pool) = open(&conn).await;
     let store = Store::open(&dir.path().join("app.db")).await.unwrap();
-    Env { _dir: dir, store, mgr, pool, conn, agent: AgentState::default() }
+    Env { _dir: dir, store, mgr, pool, conn, agent: AgentState::default(), kv: None }
+}
+
+/// Redis environment (AHSANDB_TEST_REDIS); `None` = skipped.
+async fn redis_env(access: AiAccess, env: Env_, read_only: bool) -> Option<Env> {
+    let c = from_env("AHSANDB_TEST_REDIS", Driver::Redis)?;
+    let mut e = sqlite(access, Env_(env.0), read_only).await;
+    let (conn, _) = kv::connect(&c, None, None, kv::base_db(&c).unwrap()).await.unwrap();
+    e.conn = Connection { id: e.conn.id.clone(), ai_access: access, env: env.0, read_only, ..c };
+    e.kv = Some(conn);
+    Some(e)
 }
 
 /// `Env` newtype so call sites read `sqlite(AiAccess::Data, DEV, false)`.
@@ -139,7 +152,10 @@ impl Env {
             provider: AiProvider::Anthropic,
             model: "fake",
             mgr: &self.mgr,
-            pool: &self.pool,
+            target: match &self.kv {
+                Some(c) => Target::Kv(c.clone()),
+                None => Target::Sql(&self.pool),
+            },
             conn: &self.conn,
             store: &self.store,
             agent: &self.agent,
@@ -590,4 +606,101 @@ async fn my_body(c: Connection, tmp: String) {
     assert_eq!(facts(&pool, my, &format!("DROP TABLE {tmp}.parent_archive")).await[1], "Views that depend on it: v2");
     let size = facts(&pool, my, &format!("DROP DATABASE {tmp}")).await;
     assert!(size[0].starts_with(&format!("Database {tmp} has 3 tables using ")), "{size:?}");
+}
+
+// ---------- Redis ----------
+
+fn cmd_call(id: &str, command: &str) -> ChatResponse {
+    calls(vec![call(id, "run_command", json!({"command": command, "title": "Do it", "impact": ["Keys are lost"]}))])
+}
+
+async fn redis_run(e: &Env, line: &str) -> String {
+    let args = kv::command::split_args(line).unwrap();
+    kv::run_command(&mut e.kv.clone().unwrap(), &args).await.unwrap().text
+}
+
+#[tokio::test]
+async fn redis_reads_run_and_writes_wait_for_approval() {
+    let Some(e) = &redis_env(AiAccess::Data, DEV, false).await else { return };
+    let k = format!("ahsandb_t_{}:k", rand_suffix());
+    let fake = Fake::new(vec![
+        cmd_call("c1", &format!("SET {k} hello")),
+        calls(vec![call("c2", "get_key", json!({"key": k}))]),
+        calls(vec![call("c3", "scan_keys", json!({"pattern": format!("{k}*")}))]),
+        cmd_call("c4", &format!("GET {k}")),
+        cmd_call("c5", "SELECT 2"),
+        text("Done."),
+    ]);
+    let expected = format!("SET {k} hello");
+    let events = e
+        .turn(&fake, "set it", |mut rx| async move {
+            let card = pending(&mut rx).await;
+            let AgentMessage::Action { level, sql, facts, .. } = &card else { unreachable!() };
+            assert_eq!((*level, sql.as_str()), (RiskLevel::Change, expected.as_str()));
+            assert!(facts.is_empty());
+            e.agent.decide(&action_id(&card), approve(None)).unwrap();
+        })
+        .await;
+    let reqs = fake.reqs();
+    let names: Vec<_> = reqs[0].tools.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["scan_keys", "get_key", "run_command"]);
+    assert!(reqs[0].system.contains("Redis") && reqs[0].system.contains("db"));
+    assert!(results(&reqs[1])[0].content.contains("Approved and executed:\nOK"));
+    assert!(results(&reqs[2])[0].content.contains("string · no expiry · size 5\nhello"), "{:?}", results(&reqs[2]));
+    assert!(results(&reqs[3])[0].content.contains(&format!("{k} · string")));
+    assert_eq!(results(&reqs[4])[0].content, "\"hello\"");
+    let refused = &results(&reqs[5])[0];
+    assert!(refused.is_error && refused.content.contains("not allowed"), "{refused:?}");
+    // The read shows as a result block; the write was audited.
+    assert!(messages(&events).iter().any(|m| matches!(m, AgentMessage::Result { sql, rows, .. } if sql == &format!("GET {k}") && rows[0][0] == json!("\"hello\""))));
+    let audit = e.store.audit(&e.conn.id, 10).await.unwrap();
+    assert!(audit.iter().any(|a| a.decision == "approved" && a.sql == format!("SET {k} hello")));
+    redis_run(e, &format!("DEL {k}")).await;
+}
+
+#[tokio::test]
+async fn redis_production_delete_needs_the_key_name() {
+    let Some(e) = &redis_env(AiAccess::Data, PROD, false).await else { return };
+    let k = format!("ahsandb_t_{}:k", rand_suffix());
+    redis_run(e, &format!("RPUSH {k} a b c")).await;
+    let fake = Fake::new(vec![cmd_call("c1", &format!("DEL {k}")), text("Deleted.")]);
+    let key = k.clone();
+    e.turn(&fake, "delete it", |mut rx| async move {
+        let card = pending(&mut rx).await;
+        let AgentMessage::Action { level, facts, confirm_name, impact, .. } = &card else { unreachable!() };
+        assert_eq!(*level, RiskLevel::Critical);
+        assert_eq!(facts, &[format!("{key}: list, size 3"), risk::IRREVERSIBLE.to_string()]);
+        assert_eq!(impact, &["Keys are lost"]);
+        assert_eq!(confirm_name.as_deref(), Some(key.as_str()));
+        assert!(matches!(e.agent.decide(&action_id(&card), approve(Some("wrong"))), Err(AppError::Query(_))));
+        // An edit to a blocked command is refused; the card stays pending.
+        let bad = AgentDecision { kind: DecisionKind::Edit, sql: Some("SELECT 1".into()), typed_name: None };
+        assert!(matches!(e.agent.decide(&action_id(&card), bad), Err(AppError::Query(_))));
+        e.agent.decide(&action_id(&card), approve(Some(&key))).unwrap();
+    })
+    .await;
+    assert_eq!(redis_run(e, &format!("EXISTS {k}")).await, "(integer) 0");
+}
+
+#[tokio::test]
+async fn redis_schema_only_and_read_only() {
+    let Some(e) = &redis_env(AiAccess::Schema, DEV, true).await else { return };
+    let k = format!("ahsandb_t_{}:k", rand_suffix());
+    redis_run(e, &format!("SET {k} secret")).await;
+    let fake = Fake::new(vec![
+        calls(vec![call("c1", "get_key", json!({"key": k}))]),
+        cmd_call("c2", &format!("GET {k}")),
+        cmd_call("c3", &format!("TYPE {k}")),
+        cmd_call("c4", &format!("SET {k} changed")),
+        text("ok"),
+    ]);
+    let events = e.turn(&fake, "look", no_driver).await;
+    let reqs = fake.reqs();
+    assert_eq!(results(&reqs[1])[0].content, agent::DATA_OFF);
+    assert_eq!(results(&reqs[2])[0].content, agent::DATA_OFF);
+    assert_eq!(results(&reqs[3])[0].content, "string");
+    assert!(results(&reqs[4])[0].content.contains("read-only"));
+    assert!(actions(&events).is_empty(), "no card on a read-only connection");
+    assert_eq!(redis_run(e, &format!("GET {k}")).await, "\"secret\"");
+    redis_run(e, &format!("DEL {k}")).await;
 }

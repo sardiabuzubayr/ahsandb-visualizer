@@ -1,9 +1,12 @@
 import {
+  Activity,
   CodeXml,
   Eye,
+  KeyRound,
   PencilRuler,
   Plus,
   Table2,
+  Terminal,
   Users,
   Workflow,
   X,
@@ -29,6 +32,9 @@ const ICON: Record<TabKind, ReactNode> = {
   designer: <PencilRuler size={14} aria-hidden="true" />,
   trigger: <Zap size={14} aria-hidden="true" />,
   view: <Eye size={14} aria-hidden="true" />,
+  keys: <KeyRound size={14} aria-hidden="true" />,
+  console: <Terminal size={14} aria-hidden="true" />,
+  info: <Activity size={14} aria-hidden="true" />,
 };
 
 export function TabBar() {

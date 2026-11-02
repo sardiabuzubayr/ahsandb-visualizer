@@ -15,6 +15,8 @@ import {
   isServerDriver,
   nodeActions,
   objectSchema,
+  redisDb,
+  redisTab,
   selectSql,
   tabDatabase,
   tableTarget,
@@ -40,6 +42,7 @@ const KIND_BADGE: Partial<Record<NodeKind, { text: string; color: string }>> = {
   trigger: { text: "TR", color: "text-faint" },
   sequence: { text: "SQ", color: "text-faint" },
   event: { text: "EV", color: "text-faint" },
+  keyspace: { text: "DB", color: "text-faint" },
 };
 
 const DEFAULT_OPEN = (n: SchemaNode) => n.kind === "database" || n.kind === "schema" || n.id.endsWith("/tables");
@@ -94,6 +97,8 @@ export function Sidebar() {
   const [droppingDb, setDroppingDb] = useState<{ conn: Connection; node: SchemaNode } | null>(null);
   const [menu, setMenu] = useState<{ at: { x: number; y: number }; label: string; items: ContextMenuItem[] } | null>(null);
   const { connect, disconnect, loadTree, loadDatabase, dbStatus, isConnecting } = useConnect();
+  // Redis: memory of the whole server (no per-database figure exists), read with each tree load.
+  const [kvMemory, setKvMemory] = useState<Record<string, number>>({});
 
   // Connected entries without a tree (the browser mock starts connected) load theirs once.
   useEffect(() => {
@@ -132,6 +137,14 @@ export function Sidebar() {
     }
   };
 
+  useEffect(() => {
+    if (active?.driver !== "redis" || treeState?.status !== "ready") return;
+    const id = active.id;
+    api.kvMemory(id).then(
+      (b) => b !== null && setKvMemory((m) => ({ ...m, [id]: b })),
+      () => {},
+    );
+  }, [treeState]); // a refreshed tree means fresh numbers
   const isOpen = (n: SchemaNode) => !!query || open.has(n.id) || (!multiDb && DEFAULT_OPEN(n) && !closed.has(n.id));
 
   // An open lazy database without a load in flight or a past error loads (expand, or open again after a refresh).
@@ -179,6 +192,7 @@ export function Sidebar() {
       dispatch({ type: "openTab", kind: "routine", connectionId: active.id, title: n.label, target: n.label, database });
     else if (n.kind === "role")
       dispatch({ type: "openTab", kind: "roles", connectionId: active.id, title: "Roles", target: "roles" });
+    else if (n.kind === "keyspace") dispatch(redisTab("keys", active.id, n.schema ?? "0"));
     else if (n.children || n.lazy) toggle(n);
   };
 
@@ -194,12 +208,23 @@ export function Sidebar() {
     { key: "edit", label: t("nav.edit"), onSelect: () => dispatch({ type: "openDialog", dialog: "connection", connectionId: c.id }) },
     { key: "dup", label: t("nav.duplicate"), onSelect: () => void duplicate(c) },
     ...(c.connected && isServerDriver(c.driver) ? [{ key: "newDb", label: t("nav.ctx.newDatabase"), onSelect: () => setDbDialog({ conn: c }) }] : []),
+    ...(c.connected && c.driver === "redis"
+      ? [
+          { key: "console", label: t("nav.ctx.openConsole"), onSelect: () => dispatch(redisTab("console", c.id, redisDb(c))) },
+          {
+            key: "info",
+            label: t("nav.ctx.serverInfo"),
+            onSelect: () => dispatch({ type: "openTab", kind: "info", connectionId: c.id, title: `${c.name} · info`, target: "info" }),
+          },
+        ]
+      : []),
     { key: "del", label: <span className="text-prod">{t("nav.delete")}</span>, onSelect: () => setDeleting(c) },
   ];
 
   const runNodeAction = (a: NodeAction, n: SchemaNode) => {
     if (!active) return;
-    if (a === "openData" || a === "open") return activate(n);
+    if (a === "openData" || a === "open" || a === "openKeys") return activate(n);
+    if (a === "openConsole") return dispatch(redisTab("console", active.id, n.schema ?? "0"));
     if (a === "refresh") return void loadTree(active.id);
     if (a === "copyName")
       return void navigator.clipboard.writeText(n.label).then(
@@ -256,11 +281,11 @@ export function Sidebar() {
       const expanded = expandable && isOpen(n);
       const activeTab = state.tabs.find((tb) => tb.id === state.activeTabId);
       const selected =
-        (n.kind === "table" || n.kind === "view") &&
         !!active &&
         activeTab?.connectionId === active.id &&
-        activeTab.target === tableTarget(n) &&
-        activeTab.database === tabDatabase(active.driver, n);
+        (n.kind === "keyspace"
+          ? activeTab.kind === "keys" && activeTab.database === n.schema
+          : (n.kind === "table" || n.kind === "view") && activeTab.target === tableTarget(n) && activeTab.database === tabDatabase(active.driver, n));
       const status = n.lazy ? dbStatus(n.id) : undefined;
       return (
         <div key={n.id}>
@@ -289,7 +314,7 @@ export function Sidebar() {
             className={cn(
               "flex h-[26px] w-full items-center gap-1.5 rounded-md pr-2 text-left text-[12.5px] hover:bg-raised",
               selected ? "bg-accent-bg" : "",
-              n.kind === "group" ? "text-muted" : n.kind === "more" ? "text-faint" : "text-text",
+              n.kind === "group" || (n.kind === "keyspace" && !n.count) ? "text-muted" : n.kind === "more" ? "text-faint" : "text-text",
             )}
           >
             {expandable ? (
@@ -408,6 +433,11 @@ export function Sidebar() {
                         <Loader2 size={12} role="img" aria-label={t("nav.connecting")} className="animate-spin text-muted" />
                       ) : (
                         c.connected && <span role="img" aria-label={t("nav.connected")} className="size-[7px] rounded-full bg-ok" />
+                      )}
+                      {c.driver === "redis" && c.connected && kvMemory[c.id] !== undefined && (
+                        <span title={t("nav.redisMemory")} className="shrink-0 font-mono text-[11px] text-faint">
+                          {formatBytes(kvMemory[c.id])}
+                        </span>
                       )}
                       <EnvBadge env={c.env} />
                     </button>

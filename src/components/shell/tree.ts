@@ -1,6 +1,6 @@
 import { nodeDatabase } from "../../lib/scope";
 import type { DialogContext, DialogKind } from "../../state/reducer";
-import type { Driver, ObjectKind, SchemaNode, Tab } from "../../types";
+import type { Connection, Driver, ObjectKind, SchemaNode, Tab } from "../../types";
 
 /** Keeps nodes whose label matches, plus the ancestors of any match. */
 export function filterTree(nodes: SchemaNode[], query: string): SchemaNode[] {
@@ -14,8 +14,9 @@ export function filterTree(nodes: SchemaNode[], query: string): SchemaNode[] {
   return out;
 }
 
-/** Tab `database` for an object opened from `n`: PostgreSQL only, and not for cluster-wide Roles. */
-export const tabDatabase = (driver: Driver, n: SchemaNode) => (driver === "postgres" && n.kind !== "role" ? nodeDatabase(n) : undefined);
+/** Tab `database` for an object opened from `n`: PostgreSQL (not for cluster-wide Roles), or a Redis keyspace's index. */
+export const tabDatabase = (driver: Driver, n: SchemaNode) =>
+  driver === "redis" ? n.schema : driver === "postgres" && n.kind !== "role" ? nodeDatabase(n) : undefined;
 
 /** More than one database node at the top: the navigator starts with all of them closed. */
 export const isMultiDb = (nodes: SchemaNode[]) => nodes.filter((n) => n.kind === "database").length > 1;
@@ -59,10 +60,12 @@ export type NodeAction =
   | "export"
   | "importSql"
   | "exportData"
-  | "importData";
+  | "importData"
+  | "openKeys"
+  | "openConsole";
 
-/** Server drivers can create/rename/drop databases; SQLite is one file. */
-export const isServerDriver = (d?: Driver) => !!d && d !== "sqlite";
+/** Server drivers can create/rename/drop databases; SQLite is one file and Redis has fixed numbered ones. */
+export const isServerDriver = (d?: Driver) => !!d && d !== "sqlite" && d !== "redis";
 
 /** MySQL/MariaDB have no RENAME DATABASE: the menu entry stays, disabled with a tooltip. */
 export const canRenameDatabase = (d: Driver) => d !== "mysql" && d !== "mariadb";
@@ -89,6 +92,8 @@ export function nodeActions(n: SchemaNode, driver?: Driver): NodeAction[] {
     case "function":
     case "procedure":
       return ["open", "copyName"];
+    case "keyspace":
+      return ["openKeys", "openConsole", "refresh"];
     default:
       return [];
   }
@@ -157,3 +162,10 @@ export const inDatabase = (driver: Driver, name: string, tab: Pick<Tab, "databas
 
 /** Drop database is enabled only after both confirmations: the checkbox and the exact (case-sensitive) name. */
 export const dropDatabaseConfirmed = (name: string, understood: boolean, typed: string) => understood && typed === name;
+
+/** Tab that opens a Redis tool on database `index` ("0" when the connection didn't pick one). */
+export const redisTab = (kind: "keys" | "console", connectionId: string, index: string) =>
+  ({ type: "openTab", kind, connectionId, title: kind === "keys" ? `db${index}` : `console · db${index}`, target: `db${index}`, database: index }) as const;
+
+/** Database index a Redis connection opens ("0" when its Database field is empty). */
+export const redisDb = (c: Pick<Connection, "database">) => c.database?.trim() || "0";

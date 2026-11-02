@@ -7,7 +7,8 @@ import { tags } from "@lezer/highlight";
 import type { Driver } from "../../types";
 import { getEditorPrefs, useEditorPrefs, type EditorPrefs } from "../../lib/editorPrefs";
 
-const dialects = { postgres: PostgreSQL, mysql: MySQL, mariadb: MariaSQL, sqlite: SQLite };
+// Redis connections never open a SQL editor; the entry only completes the map.
+const dialects: Record<Driver, typeof PostgreSQL> = { postgres: PostgreSQL, mysql: MySQL, mariadb: MariaSQL, sqlite: SQLite, redis: SQLite };
 
 // Colors come from CSS variables, so one theme serves dark and light.
 const highlight = HighlightStyle.define([

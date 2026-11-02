@@ -2,7 +2,7 @@ import type { SqlLanguage } from "sql-formatter";
 import type { KeywordCase } from "../../lib/editorPrefs";
 import type { Driver } from "../../types";
 
-const LANGUAGE: Record<Driver, SqlLanguage> = { postgres: "postgresql", mysql: "mysql", mariadb: "mariadb", sqlite: "sqlite" };
+const LANGUAGE: Record<Driver, SqlLanguage> = { postgres: "postgresql", mysql: "mysql", mariadb: "mariadb", sqlite: "sqlite", redis: "sql" };
 
 /** Pretty-prints SQL for the driver's dialect. Rejects on text the formatter can't parse (the caller shows it). */
 export async function formatSql(sql: string, driver: Driver, opts: { keywordCase: KeywordCase; tabSize: number }): Promise<string> {

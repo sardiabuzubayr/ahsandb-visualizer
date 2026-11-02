@@ -1,4 +1,5 @@
 import type { Connection, SchemaNode, Tab, TabKind } from "../types";
+import { redisDb, redisTab } from "../components/shell/tree";
 
 export type DialogKind = "connection" | "export" | "import" | "importSql" | "exportData" | "settings";
 
@@ -105,8 +106,10 @@ export function reducer(s: AppState, a: Action): AppState {
   switch (a.type) {
     case "openTab": {
       // Every tab belongs to a connection; with none yet, ask the user to create one.
-      if (!s.connections.some((c) => c.id === a.connectionId))
-        return { ...s, dialog: "connection", editingConnectionId: null, paletteOpen: false };
+      const conn = s.connections.find((c) => c.id === a.connectionId);
+      if (!conn) return { ...s, dialog: "connection", editingConnectionId: null, paletteOpen: false };
+      // Redis has no SQL: "new SQL editor" (⌘T, +, palette, agent) opens its console instead.
+      if (a.kind === "sql" && conn.driver === "redis") return reducer(s, redisTab("console", conn.id, a.database ?? redisDb(conn)));
       // SQL editors are always new (unless the same file is already open); other kinds reuse an existing tab for the same object.
       const sameFile = a.filePath && s.tabs.find((t) => t.filePath === a.filePath);
       if (sameFile) return { ...s, activeTabId: sameFile.id, activeConnectionId: sameFile.connectionId };

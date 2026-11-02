@@ -12,6 +12,7 @@ import { useT } from "../../i18n";
 import mariadbLogo from "../../assets/db/mariadb.svg";
 import mysqlLogo from "../../assets/db/mysql.svg";
 import postgresLogo from "../../assets/db/postgresql.svg";
+import redisLogo from "../../assets/db/redis.svg";
 import sqliteLogo from "../../assets/db/sqlite.svg";
 
 export function cn(...c: (string | false | null | undefined)[]): string {
@@ -280,6 +281,7 @@ export const DB_META: Record<Driver, { logo: string; name: string; bg: string; p
   mysql: { logo: mysqlLogo, name: "MySQL", bg: "#4479A1", port: 3306 },
   mariadb: { logo: mariadbLogo, name: "MariaDB", bg: "#003545", port: 3306 },
   sqlite: { logo: sqliteLogo, name: "SQLite", bg: "#003B57" },
+  redis: { logo: redisLogo, name: "Redis", bg: "#FF4438", port: 6379 },
 };
 
 export function DbIcon({ driver, size = 18 }: { driver: Driver; size?: 16 | 18 | 32 }) {

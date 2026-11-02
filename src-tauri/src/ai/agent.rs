@@ -1,5 +1,6 @@
-//! The agent loop: system prompt + tools (get_schema, run_sql, open_in_editor), risk levels decided
-//! by the app, approval round-trips with the UI, cancel, per-connection history and audit log.
+//! The agent loop: system prompt + tools (SQL: get_schema, run_sql, open_in_editor; Redis: scan_keys,
+//! get_key, run_command), risk levels decided by the app, approval round-trips with the UI, cancel,
+//! per-connection history and audit log.
 //!
 //! The core (`AgentState`, `run_turn`) has no Tauri dependency so tests drive it with a fake
 //! `ChatModel`; `send`/`decide`/`stop`/… are the thin Tauri-facing wrappers.
@@ -9,15 +10,17 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, Manager as _};
 use tokio::sync::{oneshot, watch};
 
+use super::kv_tools::{self, GetKey, RunCommand, ScanKeys};
 use super::risk::{self, Assessment, Op};
 use super::tools::{self, ConnFacts, GetSchema, OpenInEditor, RunSql};
 use super::{ChatItem, ChatModel, ChatRequest, StopKind, ToolCall, ToolResult};
-use crate::commands::{conn_id as bare_id, pool as scoped_pool};
+use crate::commands::{conn_id as bare_id, kv_conn, pool as scoped_pool};
 use crate::db::{self, Manager, Pool};
 use crate::error::{AppError, AppResult};
+use crate::kv::{self, command::CmdClass};
 use crate::model::{
     ActionStatus, AgentDecision, AgentEvent, AgentEventKind, AgentMessage, AgentStep, AiAccess, AiProvider, AuditEntry, Connection,
-    DecisionKind, Driver, Env, RiskLevel, StatementResult,
+    Column, DecisionKind, Driver, Env, RiskLevel, StatementResult,
 };
 use crate::secrets::{SecretKind, ai_account};
 use crate::store::Store;
@@ -113,7 +116,11 @@ impl AgentState {
                 }
             }
             DecisionKind::Edit => {
-                risk::assess(p.driver, decision.sql.as_deref().unwrap_or_default()).map_err(AppError::Query)?;
+                let edited = decision.sql.as_deref().unwrap_or_default();
+                match p.driver {
+                    Driver::Redis => drop(kv_tools::check(edited).map_err(AppError::Query)?),
+                    _ => drop(risk::assess(p.driver, edited).map_err(AppError::Query)?),
+                }
             }
             DecisionKind::Reject => {}
         }
@@ -138,12 +145,18 @@ impl AgentState {
 }
 
 /// Everything a turn needs; no Tauri types.
+/// What a turn works on: a SQL pool, or a Redis connection.
+pub enum Target<'a> {
+    Sql(&'a Pool),
+    Kv(kv::Conn),
+}
+
 pub struct Turn<'a> {
     pub chat: &'a dyn ChatModel,
     pub provider: AiProvider,
     pub model: &'a str,
     pub mgr: &'a Manager,
-    pub pool: &'a Pool,
+    pub target: Target<'a>,
     /// `id` = the IPC id (bare or scoped `<connId>@<db>`); queries register their run under it.
     pub conn: &'a Connection,
     pub store: &'a Store,
@@ -275,12 +288,21 @@ impl Run<'_> {
     }
 
     async fn system_prompt(&mut self) -> String {
-        let q = match self.t.pool {
+        let pool = match &self.t.target {
+            Target::Sql(p) => *p,
+            Target::Kv(c) => {
+                let info: String = redis::cmd("INFO").arg("server").query_async(&mut c.clone()).await.unwrap_or_default();
+                let version = kv::parse_info(&info).iter().flat_map(|s| s.fields.iter()).find(|(k, _)| k == "redis_version").map(|(_, v)| format!("Redis {v}"));
+                let db = self.t.conn.id.split_once('@').and_then(|(_, d)| d.parse().ok()).or_else(|| kv::base_db(self.t.conn).ok()).unwrap_or(0);
+                return kv_tools::system_prompt(self.t.conn, &version.unwrap_or_default(), db);
+            }
+        };
+        let q = match pool {
             Pool::Pg(_) => "SELECT current_setting('server_version'), current_database()::text, current_schema()::text",
             Pool::My(_) => "SELECT VERSION(), COALESCE(DATABASE(), ''), COALESCE(DATABASE(), '')",
             Pool::Lite(_) => "SELECT 'SQLite ' || sqlite_version(), 'main', 'main'",
         };
-        let row = risk::text_rows(self.t.pool, q, &[]).await.ok().and_then(|r| r.into_iter().next()).unwrap_or_default();
+        let row = risk::text_rows(pool, q, &[]).await.ok().and_then(|r| r.into_iter().next()).unwrap_or_default();
         let get = |i: usize| row.get(i).cloned().unwrap_or_default();
         self.schema = get(2);
         tools::system_prompt(&ConnFacts { conn: self.t.conn, server_version: &get(0), database: &get(1), schema: &self.schema })
@@ -290,7 +312,10 @@ impl Run<'_> {
         self.items.push(ChatItem::User { text: text.into() });
         self.put(AgentMessage::User { id: new_id(), text: text.into() });
         let system = self.system_prompt().await;
-        let tools = tools::specs();
+        let tools = match self.t.target {
+            Target::Sql(_) => tools::specs(),
+            Target::Kv(_) => kv_tools::specs(),
+        };
         let mut allow_tools = true;
         for call in 0..MAX_CALLS {
             if self.h.stopped() {
@@ -367,6 +392,10 @@ impl Run<'_> {
     }
 
     async fn tool(&mut self, c: &ToolCall) -> ToolOut {
+        if let Target::Kv(conn) = &self.t.target {
+            let conn = conn.clone();
+            return self.kv_tool(conn, c).await;
+        }
         match c.name.as_str() {
             "get_schema" => match tools::parse::<GetSchema>(&c.name, &c.input) {
                 Ok(a) => self.get_schema(a).await,
@@ -395,7 +424,8 @@ impl Run<'_> {
         if schema.is_empty() {
             return err("No database is selected on this connection; pass `schema`");
         }
-        match db::meta::er_model(self.t.pool, &schema).await {
+        let Target::Sql(pool) = self.t.target else { return err("Not a SQL connection") };
+        match db::meta::er_model(pool, &schema).await {
             Ok(m) => ok(tools::schema_text(&schema, &m)),
             Err(e) => err(format!("Could not read the schema: {e}")),
         }
@@ -403,9 +433,10 @@ impl Run<'_> {
 
     /// Runs one statement on the scoped pool and registers it for `stop`. A statement error is `Err`.
     async fn exec(&self, sql: &str, confirmed: bool) -> Result<StatementResult, String> {
+        let Target::Sql(pool) = self.t.target else { return Err("Not a SQL connection".into()) };
         let run_id = new_id();
         *lock(&self.h.run_id) = Some(run_id.clone());
-        let r = db::exec::execute(self.t.mgr, self.t.pool, self.t.conn, sql, confirmed, tools::UI_ROWS, &run_id).await;
+        let r = db::exec::execute(self.t.mgr, pool, self.t.conn, sql, confirmed, tools::UI_ROWS, &run_id).await;
         *lock(&self.h.run_id) = None;
         match r.map(|mut v| v.pop()) {
             Ok(Some(s)) => match &s.error {
@@ -436,17 +467,7 @@ impl Run<'_> {
         let (mut sql, mut a, mut edited) = (args.sql, a, false);
         loop {
             let mut card = self.card(&args.title, &sql, &a, &impact).await;
-            let AgentMessage::Action { id, confirm_name, .. } = &card else { unreachable!() };
-            let (id, confirm_name) = (id.clone(), confirm_name.clone());
-            let (tx, rx) = oneshot::channel();
-            let pending = Pending { conn_id: self.h.conn_id.clone(), driver: self.t.conn.driver, confirm_name, tx };
-            lock(&self.t.agent.pending).insert(id.clone(), pending);
-            let decision = tokio::select! {
-                d = rx => d.ok(),
-                _ = self.h.cancelled() => None,
-            };
-            lock(&self.t.agent.pending).remove(&id);
-            let Some(d) = decision else {
+            let Some(d) = self.decision(&card).await else {
                 self.set(&mut card, ActionStatus::Rejected, Some("Stopped".into()), None);
                 self.audit(a.level, &sql, "rejected", "stopped").await;
                 return err(STOPPED);
@@ -512,19 +533,27 @@ impl Run<'_> {
                 Op::DropDatabase => self.step("Measuring database size", &target),
                 _ => {}
             }
-            risk::facts(self.t.pool, self.t.conn.driver, a).await
+            match self.t.target {
+                Target::Sql(pool) => risk::facts(pool, self.t.conn.driver, a).await,
+                Target::Kv(_) => vec![],
+            }
         } else {
             vec![]
         };
         let conn = self.t.conn;
         let confirm_name = (critical && conn.env == Env::Prod).then(|| a.target().unwrap_or_else(|| conn.name.clone()));
+        self.emit_card(title, sql, a.level, impact, facts, confirm_name)
+    }
+
+    /// Emits a pending approval card (impact kept only for critical actions) and returns it.
+    fn emit_card(&mut self, title: &str, sql: &str, level: RiskLevel, impact: &[String], facts: Vec<String>, confirm_name: Option<String>) -> AgentMessage {
         let card = AgentMessage::Action {
             id: new_id(),
-            level: a.level,
+            level,
             title: title.into(),
             sql: sql.into(),
             status: ActionStatus::Pending,
-            impact: if critical { impact.to_vec() } else { vec![] },
+            impact: if level == RiskLevel::Critical { impact.to_vec() } else { vec![] },
             facts,
             confirm_name,
             elapsed_ms: None,
@@ -532,6 +561,20 @@ impl Run<'_> {
         };
         self.put(card.clone());
         card
+    }
+
+    /// Registers the card as pending and waits for the user's decision; `None` = the turn was stopped.
+    async fn decision(&mut self, card: &AgentMessage) -> Option<AgentDecision> {
+        let AgentMessage::Action { id, confirm_name, .. } = card else { return None };
+        let (tx, rx) = oneshot::channel();
+        let pending = Pending { conn_id: self.h.conn_id.clone(), driver: self.t.conn.driver, confirm_name: confirm_name.clone(), tx };
+        lock(&self.t.agent.pending).insert(id.clone(), pending);
+        let decision = tokio::select! {
+            d = rx => d.ok(),
+            _ = self.h.cancelled() => None,
+        };
+        lock(&self.t.agent.pending).remove(id);
+        decision
     }
 
     fn set(&mut self, card: &mut AgentMessage, to: ActionStatus, out: Option<String>, ms: Option<u64>) {
@@ -568,6 +611,161 @@ impl Run<'_> {
             }
         }
     }
+
+    // ---------- Redis ----------
+
+    async fn kv_tool(&mut self, mut conn: kv::Conn, c: &ToolCall) -> ToolOut {
+        match c.name.as_str() {
+            "scan_keys" => match tools::parse::<ScanKeys>(&c.name, &c.input) {
+                Ok(a) => {
+                    let pattern = a.pattern.filter(|p| !p.trim().is_empty()).unwrap_or_else(|| "*".into());
+                    self.step("Scanning keys", &pattern);
+                    let limit = a.limit.unwrap_or(50).clamp(1, kv_tools::MAX_KEYS);
+                    match kv::scan(&mut conn, "0", &pattern, a.type_filter.as_deref(), None, limit).await {
+                        Ok(page) if page.keys.is_empty() => ok(format!("No keys match {pattern}")),
+                        Ok(page) => {
+                            let mut lines: Vec<String> = page
+                                .keys
+                                .iter()
+                                .take(limit as usize)
+                                .map(|k| format!("{} · {} · {}", k.key, k.type_name, if k.ttl_ms < 0 { "no expiry".into() } else { format!("ttl {}s", k.ttl_ms / 1000) }))
+                                .collect();
+                            if page.cursor != "0" || page.keys.len() > limit as usize {
+                                lines.push("(more keys match; narrow the pattern)".into());
+                            }
+                            ok(lines.join("\n"))
+                        }
+                        Err(e) => err(format!("Could not scan keys: {e}")),
+                    }
+                }
+                Err(e) => err(e),
+            },
+            "get_key" => match tools::parse::<GetKey>(&c.name, &c.input) {
+                Ok(a) => {
+                    self.step("Reading key", &a.key);
+                    if self.t.conn.ai_access != AiAccess::Data {
+                        self.audit(RiskLevel::Read, &format!("GET {}", a.key), "blocked", "data access is off").await;
+                        return err(DATA_OFF);
+                    }
+                    match kv::entry(&mut conn, &a.key).await {
+                        Ok(e) => ok(kv_tools::entry_text(&e)),
+                        Err(e) => err(format!("Could not read the key: {e}")),
+                    }
+                }
+                Err(e) => err(e),
+            },
+            "run_command" => match tools::parse::<RunCommand>(&c.name, &c.input) {
+                Ok(a) if a.command.trim().is_empty() => err("Invalid arguments for run_command: command is empty"),
+                Ok(a) => self.kv_run(conn, a).await,
+                Err(e) => err(e),
+            },
+            other => err(format!("Unknown tool: {other}")),
+        }
+    }
+
+    async fn kv_run(&mut self, mut conn: kv::Conn, args: RunCommand) -> ToolOut {
+        let (mut line, (mut cmd, class)) = match kv_tools::check(&args.command) {
+            Ok(v) => (args.command.trim().to_string(), v),
+            Err(e) => {
+                self.step("Running command", &args.command);
+                return err(e);
+            }
+        };
+        if matches!(class, CmdClass::Meta | CmdClass::Read) {
+            return self.kv_read(conn, &line, &cmd, class == CmdClass::Meta).await;
+        }
+        let mut level = if class == CmdClass::Critical { RiskLevel::Critical } else { RiskLevel::Change };
+        if self.t.conn.read_only {
+            self.audit(level, &line, "blocked", "connection is read-only").await;
+            return err("This connection is read-only: changes are not allowed. Tell the user instead of trying again.");
+        }
+        let impact = args.impact.unwrap_or_default();
+        let mut edited = false;
+        loop {
+            let critical = level == RiskLevel::Critical;
+            let facts = if critical {
+                self.step("Counting keys", &line);
+                kv_tools::facts(&mut conn, &cmd).await
+            } else {
+                vec![]
+            };
+            let conn_name = self.t.conn.name.clone();
+            let confirm_name = (critical && self.t.conn.env == Env::Prod).then(|| {
+                let keys = kv::command::target_keys(&cmd);
+                if keys.is_empty() { conn_name } else { keys.join(", ") }
+            });
+            let mut card = self.emit_card(&args.title, &line, level, &impact, facts, confirm_name);
+            let Some(d) = self.decision(&card).await else {
+                self.set(&mut card, ActionStatus::Rejected, Some("Stopped".into()), None);
+                self.audit(level, &line, "rejected", "stopped").await;
+                return err(STOPPED);
+            };
+            match d.kind {
+                DecisionKind::Reject => {
+                    self.set(&mut card, ActionStatus::Rejected, None, None);
+                    self.audit(level, &line, "rejected", "").await;
+                    return ToolOut { content: REJECTED.into(), is_error: false, rejected: true };
+                }
+                DecisionKind::Edit => {
+                    self.set(&mut card, ActionStatus::Superseded, None, None);
+                    line = d.sql.unwrap_or_default().trim().to_string();
+                    // `decide` validated it already.
+                    let (next, next_class) = match kv_tools::check(&line) {
+                        Ok(v) => v,
+                        Err(e) => return err(e),
+                    };
+                    cmd = next;
+                    level = if next_class == CmdClass::Critical { RiskLevel::Critical } else { RiskLevel::Change };
+                    edited = true;
+                }
+                DecisionKind::Approve => {
+                    self.set(&mut card, ActionStatus::Approved, None, None);
+                    let prefix = if edited { format!("The user edited the command and approved it. It ran: {line}\n") } else { String::new() };
+                    return match kv::run_command(&mut conn, &cmd).await {
+                        Ok(r) if r.error => {
+                            self.set(&mut card, ActionStatus::Failed, Some(r.text.clone()), Some(r.elapsed_ms));
+                            self.audit(level, &line, "approved", &r.text).await;
+                            err(format!("{prefix}Approved, but it failed: {}", r.text))
+                        }
+                        Ok(r) => {
+                            let outcome = r.text.lines().next().unwrap_or("OK").chars().take(120).collect::<String>();
+                            self.set(&mut card, ActionStatus::Done, Some(outcome.clone()), Some(r.elapsed_ms));
+                            self.audit(level, &line, "approved", &format!("ok · {outcome}")).await;
+                            ok(format!("{prefix}Approved and executed:\n{}", kv_tools::reply_text(&r.text)))
+                        }
+                        Err(e) => {
+                            self.set(&mut card, ActionStatus::Failed, Some(e.to_string()), None);
+                            self.audit(level, &line, "approved", &e.to_string()).await;
+                            err(format!("{prefix}Approved, but it failed: {e}"))
+                        }
+                    };
+                }
+            }
+        }
+    }
+
+    /// Read command: metadata (`meta`) runs with any access; values need data access.
+    async fn kv_read(&mut self, mut conn: kv::Conn, line: &str, cmd: &[String], meta: bool) -> ToolOut {
+        self.step("Running command", line);
+        if !meta && self.t.conn.ai_access != AiAccess::Data {
+            self.audit(RiskLevel::Read, line, "blocked", "data access is off").await;
+            return err(DATA_OFF);
+        }
+        match kv::run_command(&mut conn, cmd).await {
+            Ok(r) => {
+                let rows: Vec<Vec<crate::model::Cell>> = r.text.lines().take(tools::UI_ROWS as usize).map(|l| vec![l.into()]).collect();
+                let truncated = r.text.lines().count() > rows.len();
+                let reply = Column { name: "reply".into(), type_name: "text".into(), numeric: false, pk: false, fk: false, enum_values: vec![] };
+                self.put(AgentMessage::Result { id: new_id(), sql: line.into(), columns: vec![reply], rows, truncated, elapsed_ms: r.elapsed_ms });
+                self.audit(RiskLevel::Read, line, "auto", if r.error { &r.text } else { "ok" }).await;
+                if r.error { err(format!("The command failed: {}", r.text)) } else { ok(kv_tools::reply_text(&r.text)) }
+            }
+            Err(e) => {
+                self.audit(RiskLevel::Read, line, "auto", &e.to_string()).await;
+                err(format!("The command failed: {e}"))
+            }
+        }
+    }
 }
 
 // ---------- Tauri-facing wrappers ----------
@@ -585,7 +783,12 @@ pub async fn send(app: AppHandle, state: &AppState, id: &str, provider: AiProvid
         .get(&ai_account(provider), SecretKind::AiKey)?
         .filter(|k| !k.trim().is_empty())
         .ok_or_else(|| AppError::Auth(format!("No API key saved for {}. Add one in Settings → AI.", provider.as_str())))?;
-    let pool = scoped_pool(state, id).await?;
+    // Resolve the connection before the turn starts so "Not connected" is an error here.
+    enum Owned {
+        Sql(Arc<Pool>),
+        Kv(kv::Conn),
+    }
+    let owned = if conn.driver == Driver::Redis { Owned::Kv(kv_conn(state, id).await?) } else { Owned::Sql(scoped_pool(state, id).await?) };
     let emitter = app.clone();
     let emit: Emit = Arc::new(move |e| {
         let _ = emitter.emit("agent-event", e);
@@ -602,7 +805,10 @@ pub async fn send(app: AppHandle, state: &AppState, id: &str, provider: AiProvid
             provider,
             model: &model,
             mgr: &state.db,
-            pool: &pool,
+            target: match &owned {
+                Owned::Sql(p) => Target::Sql(p),
+                Owned::Kv(c) => Target::Kv(c.clone()),
+            },
             conn: &conn,
             store: &state.store,
             agent: &state.agent,

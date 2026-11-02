@@ -282,7 +282,7 @@ function Panel() {
           <span className={cn("inline-flex min-w-0 items-center gap-1.5 rounded-md px-2 py-0.5 font-medium", envChip[conn.env])}>
             <EnvDot env={conn.env} />
             <span className="truncate" title={conn.name}>
-              {t("agent.workingOn", { name: database ? `${conn.name} · ${database}` : conn.name })}
+              {t("agent.workingOn", { name: database ? `${conn.name} · ${conn.driver === "redis" ? `db${database}` : database}` : conn.name })}
             </span>
           </span>
           <Menu

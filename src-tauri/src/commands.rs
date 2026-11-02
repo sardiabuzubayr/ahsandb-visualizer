@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter, Manager as _, State};
 
 use crate::db::{self, preview};
 use crate::ddl;
+use crate::kv;
 use crate::objects::{databases, roles, routines, triggers, views};
 use crate::error::{AppError, AppResult};
 use crate::model::*;
@@ -45,8 +46,10 @@ pub async fn test_connection(state: State<'_, AppState>, connection: Connection,
         passphrase: match secrets.ssh_passphrase { Some(p) => Some(p), None => stored(SecretKind::SshPassphrase)? },
     };
     let started = Instant::now();
-    let (pool, server_version, tunnel) = open(&state, &connection, password.as_deref(), &ssh, None).await?;
-    close(&pool).await;
+    let (opened, server_version, tunnel) = open(&state, &connection, password.as_deref(), &ssh, None).await?;
+    if let Opened::Sql(pool) = &opened {
+        close(pool).await;
+    }
     if let Some(t) = tunnel {
         t.close().await;
     }
@@ -74,7 +77,7 @@ pub async fn test_ssh(state: State<'_, AppState>, connection: Connection, secret
         agent_sock: None,
     };
     let target_host = connection.host.clone().filter(|h| !h.is_empty()).unwrap_or_else(|| "127.0.0.1".into());
-    let target_port = connection.port.unwrap_or(if connection.driver == Driver::Postgres { 5432 } else { 3306 });
+    let target_port = connection.port.unwrap_or(connection.driver.default_port());
     ssh::test_ssh(&dial, &target_host, target_port).await
 }
 
@@ -86,9 +89,12 @@ pub async fn connect(app: AppHandle, state: State<'_, AppState>, id: String) -> 
         password: state.secrets.get(&id, SecretKind::SshPassword)?,
         passphrase: state.secrets.get(&id, SecretKind::SshPassphrase)?,
     };
-    let (pool, server_version, tunnel) = open(&state, &conn, password.as_deref(), &ssh, Some(&app)).await?;
+    let (opened, server_version, tunnel) = open(&state, &conn, password.as_deref(), &ssh, Some(&app)).await?;
     drop_connection(&state, &id).await;
-    state.db.pools.lock().await.insert(id.clone(), Arc::new(pool));
+    match opened {
+        Opened::Sql(pool) => drop(state.db.pools.lock().await.insert(id.clone(), Arc::new(pool))),
+        Opened::Kv(c) => drop(state.db.kv.lock().await.insert(id.clone(), c)),
+    }
     if let Some(t) = tunnel {
         state.db.tunnels.lock().await.insert(id, t);
     }
@@ -116,6 +122,9 @@ pub async fn forget_host_key(state: State<'_, AppState>, host: String, port: u16
 #[tauri::command]
 pub async fn schema_tree(state: State<'_, AppState>, id: String) -> AppResult<Vec<SchemaNode>> {
     let conn = state.store.get(conn_id(&id)).await?;
+    if conn.driver == Driver::Redis {
+        return kv::keyspaces(&mut kv_conn(&state, &id).await?, conn_id(&id), kv::base_db(&conn)?).await;
+    }
     let pool = pool(&state, &id).await?;
     if id.contains('@') {
         // Expanding one database of a multi-database connection.
@@ -632,6 +641,36 @@ pub(crate) async fn pool(state: &AppState, id: &str) -> AppResult<Arc<db::Pool>>
     Ok(p)
 }
 
+/// Redis connection for an IPC id; a scoped id (`<connId>@<db>`) opens (once) a connection on that
+/// database, through the connection's SSH tunnel if it has one.
+pub(crate) async fn kv_conn(state: &AppState, id: &str) -> AppResult<kv::Conn> {
+    let base = {
+        let map = state.db.kv.lock().await;
+        if let Some(c) = map.get(id) {
+            return Ok(c.clone());
+        }
+        map.get(conn_id(id)).cloned().ok_or_else(|| AppError::NotFound("Not connected".into()))?
+    };
+    let Some((cid, db)) = id.split_once('@') else { return Ok(base) };
+    let conn = state.store.get(cid).await?;
+    let db = kv::parse_db(db)?;
+    if db == kv::base_db(&conn)? {
+        return Ok(base);
+    }
+    let password = state.secrets.get(cid, SecretKind::Password)?;
+    let tunnel_port = state.db.tunnels.lock().await.get(cid).map(|t| t.local_port);
+    let (c, _) = kv::connect(&conn, password.as_deref(), tunnel_port, db).await?;
+    // shortcut: two concurrent first uses may both connect; the later insert wins and the other is dropped.
+    state.db.kv.lock().await.insert(id.to_string(), c.clone());
+    Ok(c)
+}
+
+/// What `open` connected: a SQL pool or a Redis connection.
+enum Opened {
+    Sql(db::Pool),
+    Kv(kv::Conn),
+}
+
 /// Opens the SSH tunnel (when configured) and the pool through it. `app` = emit `connection-lost`
 /// when the tunnel drops; `None` for one-off tests.
 async fn open(
@@ -640,13 +679,13 @@ async fn open(
     password: Option<&str>,
     ssh_secrets: &SshSecrets,
     app: Option<&AppHandle>,
-) -> AppResult<(db::Pool, String, Option<ssh::Tunnel>)> {
+) -> AppResult<(Opened, String, Option<ssh::Tunnel>)> {
     // SQLite is a local file: SSH settings, if any, don't apply.
     let tunnel = match conn.ssh.as_ref().filter(|_| conn.driver != Driver::Sqlite) {
         None => None,
         Some(cfg) => {
             let target_host = conn.host.clone().filter(|h| !h.is_empty()).unwrap_or_else(|| "127.0.0.1".into());
-            let target_port = conn.port.unwrap_or(if conn.driver == Driver::Postgres { 5432 } else { 3306 });
+            let target_port = conn.port.unwrap_or(conn.driver.default_port());
             let trusted = state.store.trusted_host_key(&cfg.host, cfg.port).await?;
             let known_hosts = ssh::expand_tilde("~/.ssh/known_hosts");
             let (id, app) = (conn.id.clone(), app.cloned());
@@ -659,8 +698,16 @@ async fn open(
             Some(t)
         }
     };
-    match db::connect(conn, password, tunnel.as_ref().map(|t| t.local_port)).await {
-        Ok((pool, version)) => Ok((pool, version, tunnel)),
+    let port = tunnel.as_ref().map(|t| t.local_port);
+    let opened = match conn.driver {
+        Driver::Redis => match kv::base_db(conn) {
+            Ok(db) => kv::connect(conn, password, port, db).await.map(|(c, v)| (Opened::Kv(c), v)),
+            Err(e) => Err(e),
+        },
+        _ => db::connect(conn, password, port).await.map(|(p, v)| (Opened::Sql(p), v)),
+    };
+    match opened {
+        Ok((opened, version)) => Ok((opened, version, tunnel)),
         Err(e) => {
             if let Some(t) = tunnel {
                 t.close().await;
@@ -680,6 +727,8 @@ async fn drop_connection(state: &AppState, id: &str) {
     for pool in pools {
         close(&pool).await;
     }
+    // Dropping the last clone of a multiplexed connection closes its socket.
+    state.db.kv.lock().await.retain(|k, _| conn_id(k) != id);
     if let Some(t) = state.db.tunnels.lock().await.remove(id) {
         t.close().await;
     }
@@ -691,4 +740,74 @@ async fn close(pool: &db::Pool) {
         db::Pool::My(p) => p.close().await,
         db::Pool::Lite(p) => p.close().await,
     }
+}
+
+// ---------- Redis ----------
+
+/// Keys matching a glob pattern (optionally by type and with/without expiry), with type and TTL;
+/// continue from the returned cursor ("0" = done).
+#[tauri::command]
+pub async fn kv_scan(
+    state: State<'_, AppState>,
+    id: String,
+    cursor: String,
+    pattern: String,
+    type_filter: Option<String>,
+    has_ttl: Option<bool>,
+    count: u32,
+) -> AppResult<KvScanPage> {
+    kv::scan(&mut kv_conn(&state, &id).await?, &cursor, &pattern, type_filter.as_deref(), has_ttl, count.clamp(10, 1000)).await
+}
+
+#[tauri::command]
+pub async fn kv_get(state: State<'_, AppState>, id: String, key: String) -> AppResult<KvEntry> {
+    kv::entry(&mut kv_conn(&state, &id).await?, &key).await
+}
+
+/// A key browser change. Read-only connections refuse it; production needs `confirmed` (the error
+/// carries the commands to show).
+#[tauri::command]
+pub async fn kv_edit(state: State<'_, AppState>, id: String, edit: KvEdit, confirmed: bool) -> AppResult<()> {
+    let conn = state.store.get(conn_id(&id)).await?;
+    let mut c = kv_conn(&state, &id).await?;
+    let cmds = kv::plan_edit(&mut c, &edit).await?;
+    if conn.read_only {
+        return Err(AppError::ReadOnly(kv::plan_lines(&cmds)));
+    }
+    if conn.env == Env::Prod && !confirmed {
+        return Err(AppError::NeedsConfirmation(kv::plan_lines(&cmds)));
+    }
+    kv::run_edit(&mut c, &cmds).await
+}
+
+/// One console line. Blocked commands → `Query`; writes on read-only → `ReadOnly`; writes on
+/// production without `confirmed` → `NeedsConfirmation`. Recorded in the query history.
+#[tauri::command]
+pub async fn kv_command(state: State<'_, AppState>, id: String, line: String, confirmed: bool) -> AppResult<KvReply> {
+    let conn = state.store.get(conn_id(&id)).await?;
+    let args = kv::command::split_args(&line).map_err(AppError::Query)?;
+    let class = kv::command::classify(&args);
+    let writes = matches!(class, kv::command::CmdClass::Write | kv::command::CmdClass::Critical);
+    if let kv::command::CmdClass::Blocked(why) = class {
+        return Err(AppError::Query(why.into()));
+    }
+    if writes && conn.read_only {
+        return Err(AppError::ReadOnly(vec![line]));
+    }
+    if writes && conn.env == Env::Prod && !confirmed {
+        return Err(AppError::NeedsConfirmation(vec![line]));
+    }
+    let reply = kv::run_command(&mut kv_conn(&state, &id).await?, &args).await?;
+    state.store.add_history(conn_id(&id), line.trim(), !reply.error).await?;
+    Ok(reply)
+}
+
+#[tauri::command]
+pub async fn kv_memory(state: State<'_, AppState>, id: String) -> AppResult<Option<u64>> {
+    kv::server_memory(&mut kv_conn(&state, &id).await?).await
+}
+
+#[tauri::command]
+pub async fn kv_info(state: State<'_, AppState>, id: String) -> AppResult<Vec<KvInfoSection>> {
+    kv::info(&mut kv_conn(&state, &id).await?).await
 }

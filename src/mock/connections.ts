@@ -1,5 +1,6 @@
 // mock: sample connections for the browser-only dev mode.
 import type { Connection, SchemaNode } from "../types";
+import { mockKeyspaces } from "./redis";
 
 const base = { readOnly: false, sslMode: "prefer", aiAccess: "schema" } as const;
 
@@ -75,6 +76,20 @@ export const mockConnections: Connection[] = [
     connected: false,
     serverVersion: "SQLite 3.46",
   },
+  {
+    ...base,
+    id: "cache-local",
+    name: "cache-local",
+    folder: "Local",
+    driver: "redis",
+    env: "dev",
+    host: "localhost",
+    port: 6379,
+    sslMode: "disable",
+    connected: true,
+    aiAccess: "data",
+    serverVersion: "Redis 7.2.4",
+  },
 ];
 
 const group = (id: string, label: string, count: number, children: SchemaNode[] = []): SchemaNode => ({
@@ -137,6 +152,7 @@ function databaseNode(p: string, db: string, mysql: boolean): SchemaNode {
 export function mockSchemaTree(id: string): SchemaNode[] {
   const [p, scoped] = id.split("@");
   const driver = mockConnections.find((c) => c.id === p)?.driver;
+  if (driver === "redis") return mockKeyspaces(p);
   const mysql = driver === "mysql" || driver === "mariadb";
   if (scoped) return [databaseNode(p, scoped, mysql)];
   const databases =

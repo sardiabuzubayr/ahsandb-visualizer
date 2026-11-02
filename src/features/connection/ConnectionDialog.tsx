@@ -14,7 +14,7 @@ import { Select } from "../../components/ui/Select";
 
 type TestState = { s: "idle" } | { s: "testing" } | { s: "ok"; r: TestResult } | { s: "error"; message: string };
 
-const DRIVERS: Driver[] = ["postgres", "mysql", "mariadb", "sqlite"];
+const DRIVERS: Driver[] = ["postgres", "mysql", "mariadb", "sqlite", "redis"];
 const ENVS: Env[] = ["dev", "staging", "prod"];
 const ENV_ON: Record<Env, string> = { dev: "bg-dev-bg text-dev", staging: "bg-stg-bg text-stg", prod: "bg-prod-bg text-prod" };
 const SSL_MODES: SslMode[] = ["disable", "prefer", "require", "verify-full"];
@@ -47,6 +47,7 @@ export function ConnectionDialog() {
   const errors = validate(f);
   const valid = Object.keys(errors).length === 0;
   const server = f.driver !== "sqlite";
+  const redis = f.driver === "redis";
   const folders = [...new Set(["Production", "Staging", "Local", ...state.connections.map((c) => c.folder)])];
   const close = () => dispatch({ type: "closeDialog" });
 
@@ -176,7 +177,7 @@ export function ConnectionDialog() {
       <DialogHeader id="conn-title" title={t(editing ? "conn.editTitle" : "conn.title")} onClose={close} />
 
       <div className="flex min-h-0 flex-auto flex-col *:shrink-0 gap-[18px] overflow-auto px-5 py-[18px]">
-        <div role="radiogroup" aria-label={t("conn.driver")} className="grid grid-cols-4 gap-2">
+        <div role="radiogroup" aria-label={t("conn.driver")} className="grid grid-cols-5 gap-2">
           {DRIVERS.map((d) => (
             <button
               key={d}
@@ -188,12 +189,12 @@ export function ConnectionDialog() {
                 setTest({ s: "idle" });
               }}
               className={cn(
-                "flex h-[60px] items-center gap-2.5 rounded-lg border px-3 text-left",
+                "flex h-[84px] min-w-0 flex-col items-center justify-center gap-1.5 rounded-lg border px-2 text-center",
                 f.driver === d ? "border-accent bg-accent-bg" : "border-border bg-surface hover:border-border-strong",
               )}
             >
               <DbIcon driver={d} size={32} />
-              <span className="flex min-w-0 flex-col gap-px">
+              <span className="flex max-w-full min-w-0 flex-col gap-px">
                 <span className="truncate font-medium">{DB_META[d].name}</span>
                 <span className={cn("text-[11px] text-muted", d !== "sqlite" && "font-mono")}>
                   {d === "sqlite" ? t("conn.localFile") : `:${DB_META[d].port}`}
@@ -221,10 +222,16 @@ export function ConnectionDialog() {
                   {...check("port")}
                 />
               </Field>
-              <Field label={t("conn.database")} hint={t("conn.databaseHint")} className="col-span-2">
-                <Input mono placeholder={t("conn.databasePlaceholder")} title={t("conn.databaseTitle")} {...text("database")} />
-              </Field>
-              <Field label={t("conn.user")} className="col-span-2">
+              {redis ? (
+                <Field label={t("conn.database")} hint={t("conn.redisDbHint")} error={err("database")} className="col-span-2">
+                  <Input mono inputMode="numeric" placeholder="0" title={t("conn.redisDbTitle")} {...text("database")} {...check("database")} />
+                </Field>
+              ) : (
+                <Field label={t("conn.database")} hint={t("conn.databaseHint")} className="col-span-2">
+                  <Input mono placeholder={t("conn.databasePlaceholder")} title={t("conn.databaseTitle")} {...text("database")} />
+                </Field>
+              )}
+              <Field label={t("conn.user")} hint={redis ? t("common.optional") : undefined} className="col-span-2">
                 <Input mono {...text("user")} />
               </Field>
               <Field label={t("conn.password")} hint={t("common.storedEncrypted")} className="col-span-2">
@@ -363,7 +370,7 @@ export function ConnectionDialog() {
           <Collapsible title={t("conn.ssl")} summary={t(`conn.ssl.${f.sslMode}`)} open={expanded.has("ssl")} onToggle={() => toggle("ssl")}>
             <Field label={t("conn.sslMode")} className="col-span-3">
               <Select value={f.sslMode} onChange={(e) => set("sslMode", e.target.value as SslMode)}>
-                {SSL_MODES.map((m) => (
+                {SSL_MODES.filter((m) => !redis || m !== "prefer").map((m) => (
                   <option key={m} value={m}>
                     {t(`conn.ssl.${m}`)}
                   </option>

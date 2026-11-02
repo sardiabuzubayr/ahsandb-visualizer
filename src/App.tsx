@@ -38,6 +38,9 @@ const ExportDialog = lazyNamed(() => import("./features/transfer/ExportDialog"),
 const ImportDialog = lazyNamed(() => import("./features/transfer/ImportDialog"), "ImportDialog");
 const ExportDataDialog = lazyNamed(() => import("./features/transfer/ExportDataDialog"), "ExportDataDialog");
 const ImportSqlDialog = lazyNamed(() => import("./features/transfer/ImportSqlDialog"), "ImportSqlDialog");
+const KeyBrowserTab = lazyNamed(() => import("./features/redis/KeyBrowserTab"), "KeyBrowserTab");
+const ConsoleTab = lazyNamed(() => import("./features/redis/ConsoleTab"), "ConsoleTab");
+const InfoTab = lazyNamed(() => import("./features/redis/InfoTab"), "InfoTab");
 
 /** Keeps a crash inside one tab from blanking the whole window. */
 class TabBoundary extends Component<{ children: ReactNode; className?: string }, { error: Error | null }> {
@@ -79,6 +82,12 @@ function TabContent({ tab }: { tab: Tab }): ReactNode {
       return <TriggerEditorTab tab={tab} />;
     case "view":
       return <ViewDesignerTab tab={tab} />;
+    case "keys":
+      return <KeyBrowserTab tab={tab} />;
+    case "console":
+      return <ConsoleTab tab={tab} />;
+    case "info":
+      return <InfoTab tab={tab} />;
   }
 }
 

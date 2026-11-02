@@ -2,6 +2,7 @@
 // demos without a database. Only referenced in development builds, so it never ships in the app.
 import { ApiError, type Api } from "../lib/api";
 import { mockConnections, mockSchemaTree } from "./connections";
+import { mockCommand, mockEdit, mockGet, mockInfo, mockScan } from "./redis";
 import { mockAgentMessages } from "./agent";
 import { analystPrivileges, erDraftSql, erRelations, erTables, mockRoles, mockRoutine, mockTrigger, mockView } from "./objects";
 import { mockResults } from "./results";
@@ -19,7 +20,7 @@ import type {
 } from "../types";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const VERSIONS = { postgres: "PostgreSQL 16.4", mysql: "MySQL 8.4", mariadb: "MariaDB 11.4", sqlite: "SQLite 3.46" };
+const VERSIONS = { postgres: "PostgreSQL 16.4", mysql: "MySQL 8.4", mariadb: "MariaDB 11.4", sqlite: "SQLite 3.46", redis: "Redis 7.2.4" };
 
 // mock: browser-only stand-ins built from the fixtures in src/mock/.
 export const mockApi: Api = {
@@ -137,6 +138,12 @@ export const mockApi: Api = {
   readTextFile: async (path) => mockFiles.get(path) ?? "-- Opened from " + path + "\nSELECT * FROM orders LIMIT 100;\n",
   writeTextFile: async (path, contents) => void mockFiles.set(path, contents),
   writeBase64File: async (path, data) => void mockFiles.set(path, data),
+  kvScan: async (id, _cursor, pattern, typeFilter, hasTtl) => (await wait(150), mockScan(id, pattern, typeFilter, hasTtl)),
+  kvGet: async (id, key) => (await wait(80), mockGet(id, key)),
+  kvEdit: async (id, edit) => (await wait(80), mockEdit(id, edit)),
+  kvCommand: async (id, line) => (await wait(60), mockCommand(id, line)),
+  kvInfo: async () => (await wait(120), mockInfo),
+  kvMemory: async () => 4_194_304,
 };
 
 // mock: files "saved" during a browser session.

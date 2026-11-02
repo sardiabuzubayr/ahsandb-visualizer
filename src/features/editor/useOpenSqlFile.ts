@@ -1,3 +1,4 @@
+import { useT } from "../../i18n";
 import { useApp, useToast } from "../../state/app";
 import { errorText } from "../../components/shell/useConnect";
 import { fileName, pickSqlToOpen } from "../../lib/sqlFile";
@@ -6,7 +7,9 @@ import { fileName, pickSqlToOpen } from "../../lib/sqlFile";
 export function useOpenSqlFile() {
   const { state, dispatch } = useApp();
   const toast = useToast();
+  const t = useT();
   return async (database?: string) => {
+    if (state.connections.find((c) => c.id === state.activeConnectionId)?.driver === "redis") return toast(t("editor.noSqlOnRedis"));
     try {
       const path = await pickSqlToOpen();
       if (!path) return;

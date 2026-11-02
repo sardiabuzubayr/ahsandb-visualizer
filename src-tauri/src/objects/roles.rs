@@ -1,7 +1,7 @@
 //! Roles/users and privileges: read, and GRANT/REVOKE/ALTER generation from a diff.
 use std::collections::HashMap;
 
-use super::{lit, not_supported_sqlite, q, split_list, text_rows};
+use super::{lit, not_sql, not_supported_sqlite, q, split_list, text_rows};
 use crate::db::preview::{Plan, PlannedStatement};
 use crate::db::Pool;
 use crate::error::{AppError, AppResult};
@@ -323,6 +323,7 @@ pub fn plan_role(
         Driver::Postgres => plan_pg(original, target, password, schema, privileges_original, privileges_target),
         Driver::Mysql | Driver::Mariadb => plan_my(driver, original, target, password, schema, privileges_original, privileges_target),
         Driver::Sqlite => not_supported_sqlite("roles"),
+        Driver::Redis => not_sql(),
     }
 }
 

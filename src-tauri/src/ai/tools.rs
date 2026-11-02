@@ -101,6 +101,7 @@ pub fn system_prompt(f: &ConnFacts) -> String {
         Driver::Mysql => "MySQL",
         Driver::Mariadb => "MariaDB",
         Driver::Sqlite => "SQLite",
+        Driver::Redis => "Redis",
     };
     let env = match c.env {
         Env::Dev => "development",

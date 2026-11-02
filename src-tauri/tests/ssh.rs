@@ -1,5 +1,5 @@
 //! SSH tunnel tests against a throwaway sshd. Run only with AHSANDB_TEST_SSHD=1; the database parts
-//! also need AHSANDB_TEST_PG / AHSANDB_TEST_MYSQL.
+//! also need AHSANDB_TEST_PG / AHSANDB_TEST_MYSQL / AHSANDB_TEST_REDIS.
 mod common;
 
 use std::path::Path;
@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use ahsandb_lib::db::{self, Pool};
 use ahsandb_lib::error::{AppError, AppResult};
+use ahsandb_lib::kv;
 use ahsandb_lib::model::*;
 use ahsandb_lib::ssh::{self, SshSecrets, Tunnel};
 use common::sshd::{self, Sshd};
@@ -249,6 +250,17 @@ async fn databases_through_tunnel() {
         let c = Connection { host: Some("127.0.0.1".into()), port: Some(dead), ..c };
         let err = db::connect(&c, None, Some(t.local_port)).await.err().expect("must fail");
         assert!(matches!(&err, AppError::Connection(m) if m.contains(&format!("SSH tunnel to 127.0.0.1:{dead}"))), "{driver:?}: {err:?}");
+        t.close().await;
+    }
+    if let Some(mut c) = common::from_env("AHSANDB_TEST_REDIS", Driver::Redis) {
+        c.ssh = Some(cfg.clone());
+        let (host, port) = (c.host.clone().unwrap(), c.port.unwrap_or(6379));
+        let t = ssh::open_tunnel(&cfg, &secrets(None), &host, port, None, Some(&s.host_key_line()), no_lost()).await.unwrap();
+        let (mut conn, version) = kv::connect(&c, None, Some(t.local_port), 0).await.unwrap();
+        assert!(version.starts_with("Redis") || version.starts_with("Valkey"), "{version}");
+        assert_eq!(kv::run_command(&mut conn, &["PING".to_string()]).await.unwrap().text, "PONG");
+        // Without the tunnel port an SSH connection refuses to go direct.
+        assert!(matches!(kv::connect(&c, None, None, 0).await, Err(AppError::Internal(_))));
         t.close().await;
     }
 }

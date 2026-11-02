@@ -1,6 +1,6 @@
 // Shared domain types that mirror the Tauri IPC contract (src-tauri/src/model.rs), so keep UI concerns out.
 
-export type Driver = "postgres" | "mysql" | "mariadb" | "sqlite";
+export type Driver = "postgres" | "mysql" | "mariadb" | "sqlite" | "redis";
 export type Env = "dev" | "staging" | "prod";
 export type SshAuth = "password" | "key" | "agent";
 export type SslMode = "disable" | "prefer" | "require" | "verify-full";
@@ -90,7 +90,9 @@ export type NodeKind =
   | "sequence"
   | "event"
   | "role"
-  | "more";
+  | "more"
+  /** Redis logical database (`db0`…); `count` = keys, `schema` = the index. */
+  | "keyspace";
 
 export interface SchemaNode {
   id: string;
@@ -188,7 +190,7 @@ export type AppErrorKind =
   | "internal";
 
 /** `designer` = table designer; target "schema.table", or "schema.__new__<id>" for a new table. */
-export type TabKind = "sql" | "table" | "er" | "routine" | "roles" | "designer" | "trigger" | "view";
+export type TabKind = "sql" | "table" | "er" | "routine" | "roles" | "designer" | "trigger" | "view" | "keys" | "console" | "info";
 
 export interface Tab {
   id: string;
@@ -575,4 +577,80 @@ export interface JobDone {
   /** First 100 errors; index = 1-based statement or row number. */
   errors: { index: number; message: string }[];
   message: string;
+}
+
+// ---------- Redis ----------
+
+export type KvType = "string" | "hash" | "list" | "set" | "zset" | "stream";
+
+/** `ttlMs`: -1 = no expiry, -2 = the key is gone. `type` may be a module type (e.g. "ReJSON-RL"). */
+export interface KvKey {
+  key: string;
+  type: string;
+  ttlMs: number;
+  /** Bytes (MEMORY USAGE); missing when the server refuses it. */
+  memory?: number;
+}
+
+/** `cursor` "0" = the scan is complete. */
+export interface KvScanPage {
+  cursor: string;
+  keys: KvKey[];
+}
+
+export interface KvStreamEntry {
+  id: string;
+  fields: [string, string][];
+}
+
+export type KvValue =
+  | { kind: "none" }
+  | { kind: "string"; value: string; binary: boolean }
+  | { kind: "hash"; entries: [string, string][] }
+  | { kind: "list"; items: string[] }
+  | { kind: "set"; members: string[] }
+  | { kind: "zset"; entries: [string, number][] }
+  | { kind: "stream"; entries: KvStreamEntry[] }
+  | { kind: "other" };
+
+/** `length` = bytes (string) or items; `truncated` = only the first items were loaded; `binary` = not UTF-8 (read-only). */
+export interface KvEntry {
+  key: string;
+  type: string;
+  ttlMs: number;
+  length: number;
+  truncated: boolean;
+  binary: boolean;
+  memory?: number;
+  value: KvValue;
+}
+
+/** `replace` = the old field/member being renamed. */
+export type KvEdit =
+  | { op: "setString"; key: string; value: string }
+  | { op: "hashSet"; key: string; field: string; value: string; replace?: string }
+  | { op: "hashDel"; key: string; field: string }
+  | { op: "listSet"; key: string; index: number; value: string }
+  | { op: "listPush"; key: string; value: string; head: boolean }
+  | { op: "listRemove"; key: string; value: string }
+  | { op: "setAdd"; key: string; member: string; replace?: string }
+  | { op: "setRemove"; key: string; member: string }
+  | { op: "zsetAdd"; key: string; member: string; score: number; replace?: string }
+  | { op: "zsetRemove"; key: string; member: string }
+  | { op: "streamAdd"; key: string; fields: [string, string][] }
+  | { op: "streamDel"; key: string; id: string }
+  | { op: "expire"; key: string; ttlSecs: number | null }
+  | { op: "rename"; key: string; to: string }
+  | { op: "delete"; keys: string[] }
+  | { op: "create"; key: string; kind: KvType; field?: string; value: string; score?: number; ttlSecs?: number };
+
+export interface KvReply {
+  text: string;
+  error: boolean;
+  elapsedMs: number;
+}
+
+export interface KvInfoSection {
+  name: string;
+  fields: [string, string][];
 }

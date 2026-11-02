@@ -85,3 +85,14 @@ test("duplicateOf names the copy and drops id and runtime state", () => {
   expect(d).toMatchObject({ id: "", name: "orders-prod (copy)", connected: false, host: "10.0.12.4" });
   expect(d.serverVersion).toBeUndefined();
 });
+
+test("Redis: port 6379, no TLS 'prefer', and the database must be a number", () => {
+  expect(defaultPort("redis")).toBe("6379");
+  const r = applyDriverChange(valid, "redis");
+  expect(r.port).toBe("6379");
+  expect(r.sslMode).toBe("disable");
+  expect(validate({ ...r, database: "" })).toEqual({});
+  expect(validate({ ...r, database: "3" })).toEqual({});
+  expect(validate({ ...r, database: "app" }).database).toBe("conn.err.redisDb");
+  expect(toConnection({ ...r, database: "3" }, "").database).toBe("3");
+});

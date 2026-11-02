@@ -1,6 +1,7 @@
 //! AI agent: provider adapters (Anthropic Messages API; OpenAI-compatible chat completions for
 //! OpenAI, OpenRouter, DeepSeek and Gemini's OpenAI endpoint) and the agent loop with approvals.
 pub mod agent;
+pub mod kv_tools;
 pub mod risk;
 pub mod tools;
 pub mod anthropic;
