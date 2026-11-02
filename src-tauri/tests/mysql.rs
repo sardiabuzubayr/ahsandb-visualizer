@@ -141,11 +141,11 @@ async fn metadata_and_paging() {
 async fn enum_column_values() {
     let Some(c) = my() else { return };
     let (mgr, pool) = open(&c).await;
-    let db_name = c.database.clone().unwrap();
-    let t = format!("ahsandb_t_{}", rand_suffix());
-    exec(&mgr, &pool, &c, &format!("CREATE TABLE {t} (id int PRIMARY KEY, mood ENUM('sad', 'it''s ok', 'a,b'), note text)")).await.unwrap();
-    let cols = meta::table_columns(&pool, &db_name, &t).await;
-    exec(&mgr, &pool, &c, &format!("DROP TABLE {t}")).await.unwrap();
+    // Own database: other tests count the tables in the seed database concurrently.
+    let d = format!("ahsandb_t_{}", rand_suffix());
+    exec(&mgr, &pool, &c, &format!("CREATE DATABASE {d}; CREATE TABLE {d}.t (id int PRIMARY KEY, mood ENUM('sad', 'it''s ok', 'a,b'), note text)")).await.unwrap();
+    let cols = meta::table_columns(&pool, &d, "t").await;
+    exec(&mgr, &pool, &c, &format!("DROP DATABASE {d}")).await.unwrap();
     let cols = cols.unwrap();
     assert_eq!(cols[1].enum_values, ["sad", "it's ok", "a,b"]);
     assert!(cols[0].enum_values.is_empty() && cols[2].enum_values.is_empty());
