@@ -106,7 +106,7 @@ function databaseNode(p: string, db: string, mysql: boolean): SchemaNode {
         kind: "schema",
         children: [
           group(`${q}/tables`, "Tables", 12, [
-            ...tables.map((t) => ({ id: `${q}/tables/${t}`, label: t, kind: "table" as const })),
+            ...tables.map((t, i) => ({ id: `${q}/tables/${t}`, label: t, kind: "table" as const, size: [5_242_880, 81_920, 3_407_872, 1_310_720, 245_760][i % 5] })),
             { id: `${q}/tables/more`, label: "6 more…", kind: "more" as const },
           ]),
           group(`${q}/views`, "Views", 3, [

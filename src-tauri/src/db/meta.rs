@@ -63,7 +63,7 @@ async fn sizes(pool: &Pool, sql: &str, binds: &[&str]) -> HashMap<String, u64> {
     rows.into_iter().filter_map(|r| Some((r[0].clone(), r[1].parse().ok()?))).collect()
 }
 
-/// Group nodes for one schema/database from `[schema, group, name]` rows.
+/// Group nodes for one schema/database from `[schema, group, name, size?]` rows (size in bytes, tables only).
 fn groups(prefix: &str, schema: &str, objects: &[Vec<String>]) -> Vec<SchemaNode> {
     GROUPS
         .iter()
@@ -71,7 +71,10 @@ fn groups(prefix: &str, schema: &str, objects: &[Vec<String>]) -> Vec<SchemaNode
             let items: Vec<SchemaNode> = objects
                 .iter()
                 .filter(|o| o[0] == schema && o[1] == *key)
-                .map(|o| node(format!("{prefix}/{key}/{}", o[2]), &o[2], *kind, Some(schema), None))
+                .map(|o| SchemaNode {
+                    size: o.get(3).and_then(|b| b.parse().ok()),
+                    ..node(format!("{prefix}/{key}/{}", o[2]), &o[2], *kind, Some(schema), None)
+                })
                 .collect();
             if items.is_empty() && !matches!(*key, "tables" | "views") {
                 return None;
@@ -142,13 +145,14 @@ pub async fn schema_tree(pool: &Pool, conn: &Connection) -> AppResult<Vec<Schema
                 let marks = vec!["?"; dbs.len()].join(", ");
                 let binds: Vec<&str> = dbs.iter().map(String::as_str).collect();
                 let objects = text_rows(pool, &format!(
-                    "SELECT s, g, n FROM (
-                       SELECT TABLE_SCHEMA AS s, CASE TABLE_TYPE WHEN 'VIEW' THEN 'views' ELSE 'tables' END AS g, TABLE_NAME AS n
+                    "SELECT s, g, n, b FROM (
+                       SELECT TABLE_SCHEMA AS s, CASE TABLE_TYPE WHEN 'VIEW' THEN 'views' ELSE 'tables' END AS g, TABLE_NAME AS n,
+                         CASE WHEN TABLE_TYPE = 'VIEW' THEN NULL ELSE CAST(COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0) AS CHAR) END AS b
                        FROM information_schema.TABLES WHERE TABLE_TYPE <> 'SYSTEM VIEW'
-                       UNION ALL SELECT ROUTINE_SCHEMA, CASE ROUTINE_TYPE WHEN 'PROCEDURE' THEN 'procedures' ELSE 'functions' END, ROUTINE_NAME
+                       UNION ALL SELECT ROUTINE_SCHEMA, CASE ROUTINE_TYPE WHEN 'PROCEDURE' THEN 'procedures' ELSE 'functions' END, ROUTINE_NAME, NULL
                        FROM information_schema.ROUTINES
-                       UNION ALL SELECT TRIGGER_SCHEMA, 'triggers', TRIGGER_NAME FROM information_schema.TRIGGERS
-                       UNION ALL SELECT EVENT_SCHEMA, 'events', EVENT_NAME FROM information_schema.EVENTS
+                       UNION ALL SELECT TRIGGER_SCHEMA, 'triggers', TRIGGER_NAME, NULL FROM information_schema.TRIGGERS
+                       UNION ALL SELECT EVENT_SCHEMA, 'events', EVENT_NAME, NULL FROM information_schema.EVENTS
                      ) o WHERE s IN ({marks}) ORDER BY 1, 2, 3"), &binds).await?;
                 // From SCHEMATA so an existing database without tables reports 0.
                 let size = sizes(pool, &format!(
@@ -165,9 +169,17 @@ pub async fn schema_tree(pool: &Pool, conn: &Connection) -> AppResult<Vec<Schema
             tree.extend(roles_node(pool, id, "SELECT DISTINCT User FROM mysql.user ORDER BY 1").await);
         }
         Pool::Lite(_) => {
-            let objects = text_rows(pool,
+            let mut objects = text_rows(pool,
                 "SELECT 'main', type || 's', name FROM sqlite_master \
                  WHERE type IN ('table', 'view', 'trigger') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY 2, 3", &[]).await?;
+            // Table + its indexes; needs SQLite's dbstat table (missing → no sizes).
+            let table_sizes = sizes(pool,
+                "SELECT m.tbl_name, CAST(SUM(d.pgsize) AS TEXT) FROM dbstat d JOIN sqlite_master m ON m.name = d.name GROUP BY m.tbl_name", &[]).await;
+            for o in objects.iter_mut().filter(|o| o[1] == "tables") {
+                if let Some(b) = table_sizes.get(&o[2]) {
+                    o.push(b.to_string());
+                }
+            }
             let prefix = format!("{id}/main");
             let children = groups(&prefix, "main", &objects);
             let size = scalar(pool, "SELECT CAST(page_count * page_size AS TEXT) FROM pragma_page_count(), pragma_page_size()").await;
@@ -191,15 +203,16 @@ pub async fn database_tree(pool: &Pool, conn: &Connection) -> AppResult<SchemaNo
             .await?;
     // shortcut: overloaded functions and same-named triggers on different tables show once (UNION dedupes).
     let objects = text_rows(pool, &format!(
-        "SELECT n.nspname::text, CASE WHEN c.relkind IN ('r','p') THEN 'tables' WHEN c.relkind IN ('v','m') THEN 'views' ELSE 'sequences' END, c.relname::text
+        "SELECT n.nspname::text, CASE WHEN c.relkind IN ('r','p') THEN 'tables' WHEN c.relkind IN ('v','m') THEN 'views' ELSE 'sequences' END, c.relname::text,
+           CASE WHEN c.relkind IN ('r','p') THEN pg_total_relation_size(c.oid)::text END
          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r','p','v','m','S') AND {PG_SCHEMA_FILTER}
          UNION
-         SELECT n.nspname::text, CASE p.prokind WHEN 'p' THEN 'procedures' ELSE 'functions' END, p.proname::text
+         SELECT n.nspname::text, CASE p.prokind WHEN 'p' THEN 'procedures' ELSE 'functions' END, p.proname::text, NULL
          FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
          WHERE p.prokind IN ('f','p') AND {PG_SCHEMA_FILTER}
            AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
          UNION
-         SELECT n.nspname::text, 'triggers', t.tgname::text
+         SELECT n.nspname::text, 'triggers', t.tgname::text, NULL
          FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
          WHERE NOT t.tgisinternal AND {PG_SCHEMA_FILTER}
          ORDER BY 1, 2, 3"), &[]).await?;

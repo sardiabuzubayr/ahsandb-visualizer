@@ -304,7 +304,9 @@ export function Sidebar() {
             <span className={cn("min-w-4 font-mono text-[10px]", badge?.color)}>{badge?.text}</span>
             <span className="flex-1 truncate">{nodeLabel(n)}</span>
             {n.count !== undefined && <span className="font-mono text-[11px] text-faint">{n.count}</span>}
-            {n.kind === "database" && n.size !== undefined && <span className="font-mono text-[11px] text-faint">{formatBytes(n.size)}</span>}
+            {(n.kind === "database" || n.kind === "table") && n.size !== undefined && (
+              <span className="shrink-0 font-mono text-[11px] text-faint">{formatBytes(n.size)}</span>
+            )}
           </button>
           {expanded && status === "loading" && (
             <div style={{ paddingLeft: 22 + (depth + 1) * 14 }} className="flex h-[26px] items-center gap-2 text-[12.5px] text-muted">

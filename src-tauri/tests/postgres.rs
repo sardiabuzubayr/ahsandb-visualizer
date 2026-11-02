@@ -106,6 +106,11 @@ async fn metadata_and_paging() {
     let Some(c) = pg() else { return };
     let (_mgr, pool) = open(&c).await;
     let tree = meta::schema_tree(&pool, &c).await.unwrap();
+    // Tables carry their size (data + indexes); views and routines don't.
+    let all = flatten(&tree);
+    let orders = all.iter().find(|n| n.kind == NodeKind::Table && n.label == "orders").expect("orders node");
+    assert!(orders.size.is_some_and(|b| b > 0), "table size: {:?}", orders.size);
+    assert!(all.iter().filter(|n| n.kind == NodeKind::View).all(|n| n.size.is_none()));
     let ids = tree_ids(&c, &tree);
     for s in ["/public/tables/orders", "/public/views/v_open_orders", "/public/functions/fn_order_total",
         "/public/procedures/close_paid_orders", "/public/triggers/trg_orders_touch", "/public/sequences/orders_id_seq"] {
