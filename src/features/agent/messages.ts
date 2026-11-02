@@ -57,3 +57,18 @@ export function editDecision(m: ActionMessage, sql: string): AgentDecision | nul
 }
 
 export const cellText = (c: unknown) => (c === null || c === undefined ? "NULL" : String(c));
+
+/** What "Copy" puts on the clipboard for a chat entry ("" = nothing worth copying). */
+export function messageText(m: AgentMessage): string {
+  switch (m.role) {
+    case "user":
+    case "agent":
+      return m.text.trim();
+    case "action":
+      return m.sql;
+    case "result":
+      return [m.columns.map((c) => c.name), ...m.rows.map((r) => r.map(cellText))].map((r) => r.join("\t")).join("\n");
+    case "note":
+      return m.items.map((i) => `${i.term || (i.column ? `${i.table}.${i.column}` : i.table)}: ${i.after}`).join("\n");
+  }
+}

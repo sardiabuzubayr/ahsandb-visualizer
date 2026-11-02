@@ -41,7 +41,12 @@ pub struct ToolResult {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ChatItem {
-    User { text: String },
+    /// `id` = the panel message it came from (absent in chats saved before it existed).
+    User {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
     /// `raw` = the provider's own assistant content (e.g. Anthropic blocks incl. thinking), replayed
     /// unchanged when the next request goes to the same provider; other providers use text + calls.
     Assistant { text: String, tool_calls: Vec<ToolCall>, raw: Option<RawContent> },
@@ -87,6 +92,28 @@ pub struct ChatResponse {
 /// One provider + key. Implemented by `anthropic::Client` and `openai::Client`; tests use fakes.
 pub trait ChatModel: Send + Sync {
     fn complete<'a>(&'a self, req: &'a ChatRequest) -> BoxFuture<'a, AppResult<ChatResponse>>;
+}
+
+/// Removes Anthropic `thinking` / `redacted_thinking` blocks from the history (their text and tool
+/// calls stay); true when any was removed. Needed once the history no longer matches the conversation
+/// those blocks were signed for (a changed system prompt or tools, a deleted exchange).
+pub fn strip_thinking(items: &mut [ChatItem]) -> bool {
+    let mut any = false;
+    for item in items {
+        if let ChatItem::Assistant { raw: Some(RawContent { content, .. }), .. } = item
+            && let Some(blocks) = content.as_array_mut()
+        {
+            let n = blocks.len();
+            blocks.retain(|b| !matches!(b["type"].as_str(), Some("thinking" | "redacted_thinking")));
+            any |= blocks.len() != n;
+        }
+    }
+    any
+}
+
+/// Anthropic's 400 for replayed thinking blocks whose conversation changed.
+pub fn thinking_mismatch(e: &AppError) -> bool {
+    matches!(e, AppError::Query(m) if m.contains("bound to a different conversation"))
 }
 
 /// The client for a provider (no network until `complete`).

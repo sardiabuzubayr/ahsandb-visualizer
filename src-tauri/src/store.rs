@@ -1,5 +1,5 @@
 //! App-local storage (SQLite file in the app data dir): saved connections, query history, agent
-//! chats and the agent audit log.
+//! chats, the agent audit log and the data dictionary.
 use std::path::Path;
 
 use sqlx::sqlite::SqliteConnectOptions;
@@ -7,7 +7,7 @@ use sqlx::{Row, SqlitePool};
 
 use crate::ai::ChatItem;
 use crate::error::{AppError, AppResult};
-use crate::model::{AgentMessage, AuditEntry, Connection, HistoryEntry, HostKeyInfo};
+use crate::model::{AgentMessage, AuditEntry, Connection, DictMark, DictNote, DictTerm, HistoryEntry, HostKeyInfo, NoteStatus};
 
 const HISTORY_CAP: i64 = 500;
 /// Chat entries kept per connection (what the panel reloads).
@@ -40,6 +40,12 @@ impl Store {
              provider TEXT NOT NULL, model TEXT NOT NULL, level TEXT NOT NULL, sql TEXT NOT NULL, decision TEXT NOT NULL, \
              outcome TEXT NOT NULL)",
             "CREATE INDEX IF NOT EXISTS agent_audit_conn_id ON agent_audit(conn_id)",
+            // Data dictionary: kind 'note' (target = table, col = column or '' for the table itself,
+            // text = note) or 'term' (target = term, text = meaning, maps_to).
+            "CREATE TABLE IF NOT EXISTS dictionary (conn_id TEXT NOT NULL, db TEXT NOT NULL, schema TEXT NOT NULL, \
+             kind TEXT NOT NULL, target TEXT NOT NULL, col TEXT NOT NULL, text TEXT NOT NULL, maps_to TEXT NOT NULL, \
+             status TEXT NOT NULL, evidence TEXT NOT NULL, unsure INTEGER NOT NULL, updated_at TEXT NOT NULL, \
+             PRIMARY KEY (conn_id, db, schema, kind, target, col))",
         ] {
             sqlx::query(ddl).execute(&pool).await?;
         }
@@ -85,7 +91,7 @@ impl Store {
     pub async fn delete(&self, id: &str) -> AppResult<()> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM connections WHERE id = ?").bind(id).execute(&mut *tx).await?;
-        for table in ["history", "agent_chats", "agent_audit"] {
+        for table in ["history", "agent_chats", "agent_audit", "dictionary"] {
             sqlx::query(&format!("DELETE FROM {table} WHERE conn_id = ?")).bind(id).execute(&mut *tx).await?;
         }
         tx.commit().await?;
@@ -240,6 +246,145 @@ impl Store {
     }
 }
 
+/// The schema a dictionary belongs to: bare connection id, database name (`main` for SQLite) and schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DictKey {
+    pub conn: String,
+    pub db: String,
+    pub schema: String,
+}
+
+struct DictRow<'a> {
+    kind: &'a str,
+    target: &'a str,
+    col: &'a str,
+    text: &'a str,
+    maps_to: &'a str,
+    status: NoteStatus,
+    evidence: &'a str,
+    unsure: bool,
+}
+
+fn status_str(s: NoteStatus) -> &'static str {
+    match s {
+        NoteStatus::Verified => "verified",
+        NoteStatus::Draft => "draft",
+    }
+}
+
+impl Store {
+    /// Saved notes (by table, then column; the table's own note first) and terms of a schema.
+    pub async fn dictionary(&self, k: &DictKey) -> AppResult<(Vec<DictNote>, Vec<DictTerm>)> {
+        let rows = sqlx::query(
+            "SELECT kind, target, col, text, maps_to, status, evidence, unsure FROM dictionary \
+             WHERE conn_id = ? AND db = ? AND schema = ? ORDER BY kind, target, col",
+        )
+        .bind(&k.conn)
+        .bind(&k.db)
+        .bind(&k.schema)
+        .fetch_all(&self.pool)
+        .await?;
+        let (mut notes, mut terms) = (vec![], vec![]);
+        for r in &rows {
+            let status = if r.try_get::<String, _>("status")? == "draft" { NoteStatus::Draft } else { NoteStatus::Verified };
+            let (evidence, unsure): (String, bool) = (r.try_get("evidence")?, r.try_get("unsure")?);
+            if r.try_get::<String, _>("kind")? == "term" {
+                terms.push(DictTerm { term: r.try_get("target")?, meaning: r.try_get("text")?, maps_to: r.try_get("maps_to")?, status, evidence, unsure });
+            } else {
+                notes.push(DictNote { table: r.try_get("target")?, column: r.try_get("col")?, note: r.try_get("text")?, status, evidence, unsure });
+            }
+        }
+        Ok((notes, terms))
+    }
+
+    /// Upsert. `draft_only` (Learn schema) never replaces a verified entry; returns whether it wrote.
+    async fn put_dict(&self, k: &DictKey, r: DictRow<'_>, draft_only: bool) -> AppResult<bool> {
+        let guard = if draft_only { " WHERE dictionary.status = 'draft'" } else { "" };
+        let done = sqlx::query(&format!(
+            "INSERT INTO dictionary (conn_id, db, schema, kind, target, col, text, maps_to, status, evidence, unsure, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(conn_id, db, schema, kind, target, col) DO UPDATE SET text = excluded.text, maps_to = excluded.maps_to, \
+             status = excluded.status, evidence = excluded.evidence, unsure = excluded.unsure, updated_at = excluded.updated_at{guard}"
+        ))
+        .bind(&k.conn)
+        .bind(&k.db)
+        .bind(&k.schema)
+        .bind(r.kind)
+        .bind(r.target)
+        .bind(r.col)
+        .bind(r.text)
+        .bind(r.maps_to)
+        .bind(status_str(r.status))
+        .bind(r.evidence)
+        .bind(r.unsure)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    pub async fn put_note(&self, k: &DictKey, n: &DictNote, draft_only: bool) -> AppResult<bool> {
+        let r = DictRow { kind: "note", target: &n.table, col: &n.column, text: &n.note, maps_to: "", status: n.status, evidence: &n.evidence, unsure: n.unsure };
+        self.put_dict(k, r, draft_only).await
+    }
+
+    /// `previous` = the term's old name when it was renamed.
+    pub async fn put_term(&self, k: &DictKey, t: &DictTerm, previous: Option<&str>, draft_only: bool) -> AppResult<bool> {
+        if let Some(old) = previous.filter(|p| *p != t.term) {
+            self.delete_dict(k, "term", old, "").await?;
+        }
+        let r = DictRow { kind: "term", target: &t.term, col: "", text: &t.meaning, maps_to: &t.maps_to, status: t.status, evidence: &t.evidence, unsure: t.unsure };
+        self.put_dict(k, r, draft_only).await
+    }
+
+    pub async fn delete_note(&self, k: &DictKey, table: &str, column: &str) -> AppResult<()> {
+        self.delete_dict(k, "note", table, column).await
+    }
+
+    pub async fn delete_term(&self, k: &DictKey, term: &str) -> AppResult<()> {
+        self.delete_dict(k, "term", term, "").await
+    }
+
+    async fn delete_dict(&self, k: &DictKey, kind: &str, target: &str, col: &str) -> AppResult<()> {
+        sqlx::query("DELETE FROM dictionary WHERE conn_id = ? AND db = ? AND schema = ? AND kind = ? AND target = ? AND col = ?")
+            .bind(&k.conn)
+            .bind(&k.db)
+            .bind(&k.schema)
+            .bind(kind)
+            .bind(target)
+            .bind(col)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Approves (`approve`) or deletes the schema's drafts; `include_unsure` = also the unsure ones.
+    pub async fn resolve_drafts(&self, k: &DictKey, approve: bool, include_unsure: bool) -> AppResult<u64> {
+        let which = if include_unsure { "" } else { " AND unsure = 0" };
+        let filter = format!("WHERE conn_id = ? AND db = ? AND schema = ? AND status = 'draft'{which}");
+        let sql = if approve { format!("UPDATE dictionary SET status = 'verified' {filter}") } else { format!("DELETE FROM dictionary {filter}") };
+        let done = sqlx::query(&sql)
+            .bind(&k.conn)
+            .bind(&k.db)
+            .bind(&k.schema)
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected())
+    }
+
+    /// Tables of a connection that have notes, for the navigator.
+    pub async fn dict_marks(&self, conn_id: &str) -> AppResult<Vec<DictMark>> {
+        let rows: Vec<(String, String, String, bool)> = sqlx::query_as(
+            "SELECT db, schema, target, MAX(status = 'draft') FROM dictionary WHERE conn_id = ? AND kind = 'note' \
+             GROUP BY db, schema, target ORDER BY db, schema, target",
+        )
+        .bind(conn_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(database, schema, table, draft)| DictMark { database, schema, table, draft }).collect())
+    }
+}
+
 /// Index of the first item to keep: the first user item among the last `CHAT_ITEMS`, else the last
 /// user item before them (a user item never splits a tool call from its result).
 fn trim_items(items: &[ChatItem]) -> usize {
@@ -381,7 +526,7 @@ mod tests {
         let mut items = vec![];
         for i in 0..40 {
             let call = ToolCall { id: format!("call{i}"), name: "get_schema".into(), input: serde_json::json!({}) };
-            items.push(ChatItem::User { text: format!("q{i}") });
+            items.push(ChatItem::User { text: format!("q{i}"), id: None });
             items.push(ChatItem::Assistant { text: String::new(), tool_calls: vec![call], raw: None });
             items.push(ChatItem::ToolResults { results: vec![ToolResult { call_id: format!("call{i}"), content: "x".into(), is_error: false }] });
             items.push(ChatItem::Assistant { text: format!("a{i}"), tool_calls: vec![], raw: None });
@@ -390,12 +535,12 @@ mod tests {
         store.save_chat(&c.id, &items, &messages).await.unwrap();
         let (got, msgs) = store.load_chat(&c.id).await.unwrap();
         assert_eq!(got.len(), 100);
-        assert_eq!(got[0], ChatItem::User { text: "q15".into() });
+        assert_eq!(got[0], ChatItem::User { text: "q15".into(), id: None });
         assert_eq!(msgs.len(), 200);
         assert!(matches!(&msgs[0], AgentMessage::User { id, .. } if id == "m50"));
         // Cut point not on a user item → moves forward to the next one.
         store.save_chat(&c.id, &items[..158], &[]).await.unwrap();
-        assert_eq!(store.load_chat(&c.id).await.unwrap().0[0], ChatItem::User { text: "q15".into() });
+        assert_eq!(store.load_chat(&c.id).await.unwrap().0[0], ChatItem::User { text: "q15".into(), id: None });
         assert_eq!(trim_items(&items[..3]), 0);
 
         let entry = |decision: &str| AuditEntry {
@@ -422,5 +567,58 @@ mod tests {
         store.delete(&c.id).await.unwrap();
         assert!(store.load_chat(&c.id).await.unwrap().0.is_empty());
         assert!(store.audit(&c.id, 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dictionary_drafts_never_replace_verified_notes() {
+        use crate::model::{DictNote, DictTerm, NoteStatus};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("app.db")).await.unwrap();
+        let c = store.save(conn("a")).await.unwrap();
+        let key = DictKey { conn: c.id.clone(), db: "shop".into(), schema: "public".into() };
+        let other = DictKey { schema: "audit".into(), ..key.clone() };
+        let note = |col: &str, text: &str, status, unsure| DictNote {
+            table: "bills".into(),
+            column: col.into(),
+            note: text.into(),
+            status,
+            evidence: "e".into(),
+            unsure,
+        };
+        assert!(store.put_note(&key, &note("", "One bill per month", NoteStatus::Verified, false), false).await.unwrap());
+        // Learn schema can't overwrite a verified note, but can replace its own draft.
+        assert!(!store.put_note(&key, &note("", "guess", NoteStatus::Draft, false), true).await.unwrap());
+        assert!(store.put_note(&key, &note("status", "1 = active", NoteStatus::Draft, true), true).await.unwrap());
+        assert!(store.put_note(&key, &note("status", "1 = active, 2 = waived", NoteStatus::Draft, true), true).await.unwrap());
+        assert!(store.put_note(&key, &note("amount", "Before discount", NoteStatus::Draft, false), true).await.unwrap());
+        let term = DictTerm { term: "Paid".into(), meaning: "No balance left".into(), maps_to: "bills.outstanding = 0".into(), status: NoteStatus::Verified, evidence: String::new(), unsure: false };
+        store.put_term(&key, &term, None, false).await.unwrap();
+        store.put_term(&key, &DictTerm { term: "Settled".into(), ..term.clone() }, Some("Paid"), false).await.unwrap();
+        store.put_note(&other, &note("", "elsewhere", NoteStatus::Verified, false), false).await.unwrap();
+
+        let (notes, terms) = store.dictionary(&key).await.unwrap();
+        let texts: Vec<(&str, &str, NoteStatus)> = notes.iter().map(|n| (n.column.as_str(), n.note.as_str(), n.status)).collect();
+        assert_eq!(
+            texts,
+            [("", "One bill per month", NoteStatus::Verified), ("amount", "Before discount", NoteStatus::Draft), ("status", "1 = active, 2 = waived", NoteStatus::Draft)]
+        );
+        assert_eq!(terms.iter().map(|t| t.term.as_str()).collect::<Vec<_>>(), ["Settled"]);
+
+        let marks = store.dict_marks(&c.id).await.unwrap();
+        assert_eq!(marks.len(), 2);
+        assert!(marks.iter().any(|m| m.schema == "public" && m.table == "bills" && m.draft));
+        assert!(marks.iter().any(|m| m.schema == "audit" && !m.draft));
+
+        // Confident drafts first, then the unsure ones are rejected.
+        assert_eq!(store.resolve_drafts(&key, true, false).await.unwrap(), 1);
+        assert_eq!(store.resolve_drafts(&key, false, true).await.unwrap(), 1);
+        let (notes, _) = store.dictionary(&key).await.unwrap();
+        assert!(notes.iter().all(|n| n.status == NoteStatus::Verified) && notes.len() == 2);
+
+        store.delete_term(&key, "Settled").await.unwrap();
+        store.delete_note(&key, "bills", "amount").await.unwrap();
+        assert_eq!(store.dictionary(&key).await.unwrap().0.len(), 1);
+        store.delete(&c.id).await.unwrap();
+        assert!(store.dict_marks(&c.id).await.unwrap().is_empty());
     }
 }

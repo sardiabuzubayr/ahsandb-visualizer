@@ -548,6 +548,12 @@ pub async fn agent_history(state: State<'_, AppState>, id: String) -> AppResult<
     crate::ai::agent::history(&state, conn_id(&id)).await
 }
 
+/// Deletes a user message and the agent's answer to it.
+#[tauri::command]
+pub async fn agent_delete_message(state: State<'_, AppState>, id: String, message_id: String) -> AppResult<()> {
+    crate::ai::agent::delete_message(&state, conn_id(&id), &message_id).await
+}
+
 #[tauri::command]
 pub async fn agent_clear(state: State<'_, AppState>, id: String) -> AppResult<()> {
     crate::ai::agent::clear(&state, conn_id(&id)).await
@@ -810,4 +816,154 @@ pub async fn kv_memory(state: State<'_, AppState>, id: String) -> AppResult<Opti
 #[tauri::command]
 pub async fn kv_info(state: State<'_, AppState>, id: String) -> AppResult<Vec<KvInfoSection>> {
     kv::info(&mut kv_conn(&state, &id).await?).await
+}
+
+// ---------- data dictionary ----------
+
+/// Dictionary key of a schema on an IPC id (the database comes from its pool).
+async fn dict_key(state: &AppState, id: &str, schema: &str) -> AppResult<(Arc<db::Pool>, crate::store::DictKey)> {
+    let pool = pool(state, id).await?;
+    let db = crate::dict::database_name(&pool, schema).await;
+    Ok((pool, crate::store::DictKey { conn: conn_id(id).into(), db, schema: schema.into() }))
+}
+
+#[tauri::command]
+pub async fn dict_get(state: State<'_, AppState>, id: String, schema: String) -> AppResult<Dictionary> {
+    let (pool, key) = dict_key(&state, &id, &schema).await?;
+    crate::dict::load(&state.store, &pool, &key).await
+}
+
+#[tauri::command]
+pub async fn dict_put_note(state: State<'_, AppState>, id: String, schema: String, note: DictNote) -> AppResult<()> {
+    if note.table.trim().is_empty() {
+        return Err(AppError::Query("A note needs a table".into()));
+    }
+    let (_, key) = dict_key(&state, &id, &schema).await?;
+    if note.note.trim().is_empty() {
+        return state.store.delete_note(&key, &note.table, &note.column).await;
+    }
+    state.store.put_note(&key, &DictNote { note: note.note.trim().into(), ..note }, false).await.map(drop)
+}
+
+#[tauri::command]
+pub async fn dict_delete_note(state: State<'_, AppState>, id: String, schema: String, table: String, column: String) -> AppResult<()> {
+    let (_, key) = dict_key(&state, &id, &schema).await?;
+    state.store.delete_note(&key, &table, &column).await
+}
+
+/// `previous` = the term's old name when it was renamed.
+#[tauri::command]
+pub async fn dict_put_term(state: State<'_, AppState>, id: String, schema: String, term: DictTerm, previous: Option<String>) -> AppResult<()> {
+    let term = DictTerm { term: term.term.trim().into(), meaning: term.meaning.trim().into(), maps_to: term.maps_to.trim().into(), ..term };
+    if term.term.is_empty() || term.meaning.is_empty() {
+        return Err(AppError::Query("A term needs a name and a meaning".into()));
+    }
+    let (_, key) = dict_key(&state, &id, &schema).await?;
+    let (_, terms) = state.store.dictionary(&key).await?;
+    if previous.as_deref() != Some(term.term.as_str()) && terms.iter().any(|t| t.term == term.term) {
+        return Err(AppError::Query(format!("The glossary already has \"{}\"", term.term)));
+    }
+    state.store.put_term(&key, &term, previous.as_deref(), false).await.map(drop)
+}
+
+#[tauri::command]
+pub async fn dict_delete_term(state: State<'_, AppState>, id: String, schema: String, term: String) -> AppResult<()> {
+    let (_, key) = dict_key(&state, &id, &schema).await?;
+    state.store.delete_term(&key, &term).await
+}
+
+/// Approves or rejects the schema's drafts at once; `include_unsure` = also the unsure ones.
+#[tauri::command]
+pub async fn dict_resolve_drafts(state: State<'_, AppState>, id: String, schema: String, approve: bool, include_unsure: bool) -> AppResult<u64> {
+    let (_, key) = dict_key(&state, &id, &schema).await?;
+    state.store.resolve_drafts(&key, approve, include_unsure).await
+}
+
+/// Tables with notes on a connection (all databases), for the navigator.
+#[tauri::command]
+pub async fn dict_marks(state: State<'_, AppState>, id: String) -> AppResult<Vec<DictMark>> {
+    state.store.dict_marks(conn_id(&id)).await
+}
+
+fn learn_slot(id: &str, schema: &str) -> String {
+    format!("{id}\n{schema}")
+}
+
+/// Starts "Learn schema" in the background; progress arrives as `dict-learn` events. Errors before
+/// it starts (no key, AI access off, samples without data access, already running) are returned here.
+#[tauri::command]
+pub async fn dict_learn(app: AppHandle, state: State<'_, AppState>, id: String, schema: String, options: LearnOptions) -> AppResult<()> {
+    let conn = Connection { id: id.clone(), ..state.store.get(conn_id(&id)).await? };
+    if conn.ai_access == AiAccess::Off {
+        return Err(AppError::Query("AI access is off for this connection. Turn it on in the connection settings first.".into()));
+    }
+    if options.samples && !crate::dict::samples_allowed(&conn) {
+        return Err(AppError::Query("Sample data needs AI data access on this connection".into()));
+    }
+    let key = state
+        .secrets
+        .get(&secrets::ai_account(options.provider), SecretKind::AiKey)?
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| AppError::Auth(format!("No API key saved for {}. Add one in Settings → AI.", options.provider.as_str())))?;
+    let (pool, dict_key) = dict_key(&state, &id, &schema).await?;
+    let slot = learn_slot(&id, &schema);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let mut running = state.learning.lock().unwrap_or_else(|e| e.into_inner());
+        if running.contains_key(&slot) {
+            return Err(AppError::Query("Learn schema is already running for this schema".into()));
+        }
+        running.insert(slot.clone(), stop.clone());
+    }
+    // shortcut: one OS thread per run, like agent turns (sqlx futures aren't provably `Send` here).
+    std::thread::spawn(move || tauri::async_runtime::block_on(async move {
+        let state = app.state::<AppState>();
+        let chat = crate::ai::client(options.provider, key);
+        let learner = crate::dict::Learner {
+            chat: chat.as_ref(),
+            model: &options.model,
+            mgr: &state.db,
+            pool: &pool,
+            conn: &conn,
+            store: &state.store,
+            key: dict_key,
+            samples: options.samples,
+            language: &options.language,
+            stop: &stop,
+        };
+        let event = |done, total, current: &str, drafts, finished, error: Option<String>| LearnEvent {
+            id: id.clone(),
+            schema: schema.clone(),
+            done,
+            total,
+            current: current.into(),
+            drafts,
+            finished,
+            error,
+        };
+        let result = learner
+            .run(&options.tables, |p| {
+                let _ = app.emit("dict-learn", event(p.done, p.total, p.current, p.drafts, false, None));
+            })
+            .await;
+        let last = match result {
+            Ok(r) => {
+                let error = (!r.failed.is_empty()).then(|| format!("{} table(s) failed: {}", r.failed.len(), r.failed.join("; ")));
+                event(0, 0, "", r.drafts, true, error)
+            }
+            Err(e) => event(0, 0, "", 0, true, Some(e.to_string())),
+        };
+        state.learning.lock().unwrap_or_else(|e| e.into_inner()).remove(&slot);
+        let _ = app.emit("dict-learn", last);
+    }));
+    Ok(())
+}
+
+/// Stops a running "Learn schema" after the table it is on.
+#[tauri::command]
+pub async fn dict_learn_stop(state: State<'_, AppState>, id: String, schema: String) -> AppResult<()> {
+    if let Some(stop) = state.learning.lock().unwrap_or_else(|e| e.into_inner()).get(&learn_slot(&id, &schema)) {
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
 }

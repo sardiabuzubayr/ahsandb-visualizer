@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type MouseEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { ChevronDown, ChevronRight, Loader2, MoreHorizontal, PanelLeftClose, Plus, RefreshCw, Search } from "lucide-react";
+import { BookOpen, ChevronDown, ChevronRight, Loader2, MoreHorizontal, PanelLeftClose, Plus, RefreshCw, Search } from "lucide-react";
 import { writePref } from "../../lib/storage";
 import { useT } from "../../i18n";
 import { api, isApiError } from "../../lib/api";
@@ -27,6 +27,7 @@ import { scopedId } from "../../lib/scope";
 import { duplicateOf } from "../../features/connection/form";
 import { defaultSchema } from "../../features/data/table";
 import { queueSql } from "../../features/editor/pendingSql";
+import { DICT_CHANGED, dictDatabase, markKey } from "../../features/dictionary/dictionary";
 import { errorText, folderLabel, useConnect } from "./useConnect";
 import { DropDialog } from "./DropDialog";
 import { DatabaseDialog } from "./DatabaseDialog";
@@ -99,6 +100,8 @@ export function Sidebar() {
   const { connect, disconnect, loadTree, loadDatabase, dbStatus, isConnecting } = useConnect();
   // Redis: memory of the whole server (no per-database figure exists), read with each tree load.
   const [kvMemory, setKvMemory] = useState<Record<string, number>>({});
+  // Tables with data-dictionary notes on the active connection: markKey → has drafts.
+  const [marks, setMarks] = useState<Map<string, boolean>>(new Map());
 
   // Connected entries without a tree (the browser mock starts connected) load theirs once.
   useEffect(() => {
@@ -116,6 +119,24 @@ export function Sidebar() {
   const tree = useMemo(() => (treeState?.status === "ready" ? filterTree(treeState.nodes, query) : []), [treeState, query]);
   // Several databases: nothing starts open, so connecting doesn't load (or show) every one of them.
   const multiDb = treeState?.status === "ready" && isMultiDb(treeState.nodes);
+
+  // Dictionary marks follow the active connection's tree and every dictionary change.
+  const markConn = active?.connected && active.driver !== "redis" && treeState?.status === "ready" ? active.id : null;
+  useEffect(() => {
+    if (!markConn) return setMarks(new Map());
+    let live = true;
+    const load = () =>
+      api.dictMarks(markConn).then(
+        (ms) => live && setMarks(new Map(ms.map((m) => [markKey(m.database, m.schema, m.table), m.draft]))),
+        () => {}, // marks are a hint; the tree works without them
+      );
+    void load();
+    window.addEventListener(DICT_CHANGED, load);
+    return () => {
+      live = false;
+      window.removeEventListener(DICT_CHANGED, load);
+    };
+  }, [markConn]);
 
   const toggleConnection = (c: Connection) => (c.connected ? disconnect(c.id) : connect(c.id));
   const duplicate = async (c: Connection) => {
@@ -248,6 +269,7 @@ export function Sidebar() {
     const schema = objectSchema(n) ?? defaultSchema(active);
     const tab = { connectionId: active.id, database };
     if (a === "editView") return dispatch({ type: "openTab", kind: "view", ...tab, title: n.label, target: `${schema}.${n.label}` });
+    if (a === "openDictionary") return dispatch({ type: "openTab", kind: "dict", ...tab, title: t("dict.tabTitle", { schema }), target: schema });
     const fresh = `${schema}.__new__${Date.now()}`;
     if (a === "newTable") return dispatch({ type: "openTab", kind: "designer", ...tab, title: t("nav.newTableTitle"), target: fresh });
     if (a === "newView") return dispatch({ type: "openTab", kind: "view", ...tab, title: t("nav.newViewTitle"), target: fresh });
@@ -329,6 +351,14 @@ export function Sidebar() {
             <span className={cn("min-w-4 font-mono text-[10px]", badge?.color)}>{badge?.text}</span>
             <span className="flex-1 truncate">{nodeLabel(n)}</span>
             {n.count !== undefined && <span className="font-mono text-[11px] text-faint">{n.count}</span>}
+            {n.kind === "table" && active && marks.has(markKey(dictDatabase(active.driver, n), n.schema, n.label)) && (
+              <BookOpen
+                size={11}
+                role="img"
+                aria-label={t(marks.get(markKey(dictDatabase(active.driver, n), n.schema, n.label)) ? "nav.dictDrafts" : "nav.dictNotes")}
+                className={cn("shrink-0", marks.get(markKey(dictDatabase(active.driver, n), n.schema, n.label)) ? "text-accent" : "text-ok")}
+              />
+            )}
             {(n.kind === "database" || n.kind === "table") && n.size !== undefined && (
               <span className="shrink-0 font-mono text-[11px] text-faint">{formatBytes(n.size)}</span>
             )}

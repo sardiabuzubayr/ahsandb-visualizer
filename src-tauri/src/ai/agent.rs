@@ -1,6 +1,6 @@
-//! The agent loop: system prompt + tools (SQL: get_schema, run_sql, open_in_editor; Redis: scan_keys,
-//! get_key, run_command), risk levels decided by the app, approval round-trips with the UI, cancel,
-//! per-connection history and audit log.
+//! The agent loop: system prompt + tools (SQL: get_schema, run_sql, save_to_dictionary, open_in_editor;
+//! Redis: scan_keys, get_key, run_command), risk levels decided by the app, approval round-trips with
+//! the UI, cancel, per-connection history and audit log.
 //!
 //! The core (`AgentState`, `run_turn`) has no Tauri dependency so tests drive it with a fake
 //! `ChatModel`; `send`/`decide`/`stop`/… are the thin Tauri-facing wrappers.
@@ -12,18 +12,19 @@ use tokio::sync::{oneshot, watch};
 
 use super::kv_tools::{self, GetKey, RunCommand, ScanKeys};
 use super::risk::{self, Assessment, Op};
-use super::tools::{self, ConnFacts, GetSchema, OpenInEditor, RunSql};
+use super::tools::{self, ConnFacts, GetSchema, OpenInEditor, RunSql, SaveToDictionary};
 use super::{ChatItem, ChatModel, ChatRequest, StopKind, ToolCall, ToolResult};
 use crate::commands::{conn_id as bare_id, kv_conn, pool as scoped_pool};
 use crate::db::{self, Manager, Pool};
+use crate::dict;
 use crate::error::{AppError, AppResult};
 use crate::kv::{self, command::CmdClass};
 use crate::model::{
     ActionStatus, AgentDecision, AgentEvent, AgentEventKind, AgentMessage, AgentStep, AiAccess, AiProvider, AuditEntry, Connection,
-    Column, DecisionKind, Driver, Env, RiskLevel, StatementResult,
+    Column, DecisionKind, DictNote, DictTerm, Driver, Env, NoteItem, NotePick, NoteStatus, RiskLevel, StatementResult,
 };
 use crate::secrets::{SecretKind, ai_account};
-use crate::store::Store;
+use crate::store::{DictKey, Store};
 use crate::AppState;
 
 /// Model calls per user message.
@@ -54,6 +55,8 @@ struct Pending {
     conn_id: String,
     driver: Driver,
     confirm_name: Option<String>,
+    /// A data-dictionary card (approve or reject only).
+    note: bool,
     tx: oneshot::Sender<AgentDecision>,
 }
 
@@ -115,6 +118,7 @@ impl AgentState {
                     return Err(AppError::Query(format!("Type {name} exactly to confirm")));
                 }
             }
+            DecisionKind::Edit if p.note => return Err(AppError::Query("Edit the entries on the card, then save".into())),
             DecisionKind::Edit => {
                 let edited = decision.sql.as_deref().unwrap_or_default();
                 match p.driver {
@@ -182,7 +186,7 @@ pub async fn run_turn(t: Turn<'_>, handle: Arc<TurnHandle>, text: &str) {
         Ok(v) => v,
         Err(e) => return handle.emit(AgentEventKind::Error { message: e.to_string() }),
     };
-    let mut run = Run { t, h: handle, items, messages, cur: Cur::default(), schema: String::new() };
+    let mut run = Run { t, h: handle, items, messages, cur: Cur::default(), schema: String::new(), glossary: String::new() };
     run.go(text).await;
     seal(&mut run.items);
     if let Err(e) = run.t.store.save_chat(&run.h.conn_id, &run.items, &run.messages).await {
@@ -216,6 +220,8 @@ struct Run<'a> {
     cur: Cur,
     /// Schema/database in use (default for get_schema).
     schema: String,
+    /// Glossary of that schema's data dictionary (system prompt).
+    glossary: String,
 }
 
 struct ToolOut {
@@ -238,7 +244,11 @@ fn new_id() -> String {
 
 fn msg_id(m: &AgentMessage) -> &str {
     match m {
-        AgentMessage::User { id, .. } | AgentMessage::Agent { id, .. } | AgentMessage::Action { id, .. } | AgentMessage::Result { id, .. } => id,
+        AgentMessage::User { id, .. }
+        | AgentMessage::Agent { id, .. }
+        | AgentMessage::Action { id, .. }
+        | AgentMessage::Result { id, .. }
+        | AgentMessage::Note { id, .. } => id,
     }
 }
 
@@ -305,12 +315,28 @@ impl Run<'_> {
         let row = risk::text_rows(pool, q, &[]).await.ok().and_then(|r| r.into_iter().next()).unwrap_or_default();
         let get = |i: usize| row.get(i).cloned().unwrap_or_default();
         self.schema = get(2);
-        tools::system_prompt(&ConnFacts { conn: self.t.conn, server_version: &get(0), database: &get(1), schema: &self.schema })
+        if !self.schema.is_empty() {
+            let schema = self.schema.clone();
+            if let Ok(d) = self.dictionary(&schema).await.map(|(_, d)| d) {
+                self.glossary = dict::glossary_text(&d.terms);
+            }
+        }
+        let facts = ConnFacts { conn: self.t.conn, server_version: &get(0), database: &get(1), schema: &self.schema, glossary: &self.glossary };
+        tools::system_prompt(&facts)
+    }
+
+    /// The data dictionary of a schema on this connection (saved notes + database comments).
+    async fn dictionary(&self, schema: &str) -> AppResult<(DictKey, crate::model::Dictionary)> {
+        let Target::Sql(pool) = self.t.target else { return Err(AppError::NotSupported("Not a SQL connection".into())) };
+        let key = DictKey { conn: self.h.conn_id.clone(), db: dict::database_name(pool, schema).await, schema: schema.into() };
+        let d = dict::load(self.t.store, pool, &key).await?;
+        Ok((key, d))
     }
 
     async fn go(&mut self, text: &str) {
-        self.items.push(ChatItem::User { text: text.into() });
-        self.put(AgentMessage::User { id: new_id(), text: text.into() });
+        let id = new_id();
+        self.items.push(ChatItem::User { text: text.into(), id: Some(id.clone()) });
+        self.put(AgentMessage::User { id, text: text.into() });
         let system = self.system_prompt().await;
         let tools = match self.t.target {
             Target::Sql(_) => tools::specs(),
@@ -321,17 +347,26 @@ impl Run<'_> {
             if self.h.stopped() {
                 return;
             }
-            let req = ChatRequest {
-                model: self.t.model.into(),
-                system: system.clone(),
-                items: self.items.clone(),
-                tools: tools.clone(),
-                allow_tools,
-                max_tokens: MAX_TOKENS,
-            };
-            let resp = tokio::select! {
-                r = self.t.chat.complete(&req) => r,
-                _ = self.h.cancelled() => return,
+            let mut stripped = false;
+            let resp = loop {
+                let req = ChatRequest {
+                    model: self.t.model.into(),
+                    system: system.clone(),
+                    items: self.items.clone(),
+                    tools: tools.clone(),
+                    allow_tools,
+                    max_tokens: MAX_TOKENS,
+                };
+                let r = tokio::select! {
+                    r = self.t.chat.complete(&req) => r,
+                    _ = self.h.cancelled() => return,
+                };
+                // Saved thinking blocks are bound to the system prompt and tools they were made with;
+                // after either changed (app update, glossary edit), drop them once and resend.
+                match r {
+                    Err(e) if !stripped && super::thinking_mismatch(&e) && super::strip_thinking(&mut self.items) => stripped = true,
+                    r => break r,
+                }
             };
             let resp = match resp {
                 Ok(r) => r,
@@ -406,6 +441,10 @@ impl Run<'_> {
                 Ok(a) => self.run_sql(a).await,
                 Err(e) => err(e),
             },
+            "save_to_dictionary" => match tools::parse::<SaveToDictionary>(&c.name, &c.input) {
+                Ok(a) => self.save_notes(a).await,
+                Err(e) => err(e),
+            },
             "open_in_editor" => match tools::parse::<OpenInEditor>(&c.name, &c.input) {
                 Ok(a) => {
                     self.step("Opening in SQL editor", &a.sql);
@@ -425,10 +464,99 @@ impl Run<'_> {
             return err("No database is selected on this connection; pass `schema`");
         }
         let Target::Sql(pool) = self.t.target else { return err("Not a SQL connection") };
-        match db::meta::er_model(pool, &schema).await {
-            Ok(m) => ok(tools::schema_text(&schema, &m)),
-            Err(e) => err(format!("Could not read the schema: {e}")),
+        let m = match db::meta::er_model(pool, &schema).await {
+            Ok(m) => m,
+            Err(e) => return err(format!("Could not read the schema: {e}")),
+        };
+        // A dictionary that can't be read leaves the plain schema.
+        let d = self.dictionary(&schema).await.map(|(_, d)| d).unwrap_or_default();
+        let (notes, terms) = (d.note_count(), d.terms.len());
+        if notes + terms > 0
+            && let Some(s) = self.cur.steps.last_mut()
+        {
+            s.detail = format!("{schema} · {notes} dictionary notes, {terms} terms");
+            self.put_cur();
         }
+        ok(tools::schema_text(&schema, &m, &d))
+    }
+
+    /// Shows the proposed dictionary entries on a card and saves the ones the user approves (as verified).
+    async fn save_notes(&mut self, a: SaveToDictionary) -> ToolOut {
+        if a.notes.is_empty() && a.terms.is_empty() {
+            return err("Invalid arguments for save_to_dictionary: give notes or terms");
+        }
+        let schema = self.schema.clone();
+        if schema.is_empty() {
+            return err("No database is selected on this connection");
+        }
+        let (key, d) = match self.dictionary(&schema).await {
+            Ok(v) => v,
+            Err(e) => return err(format!("Could not read the data dictionary: {e}")),
+        };
+        let Target::Sql(pool) = self.t.target else { return err("Not a SQL connection") };
+        let model = db::meta::er_model(pool, &schema).await.ok();
+        let mut items = vec![];
+        for n in &a.notes {
+            let (table, column) = (n.table.trim().to_string(), n.column.as_deref().unwrap_or_default().trim().to_string());
+            if n.note.trim().is_empty() || table.is_empty() {
+                return err("Invalid arguments for save_to_dictionary: every note needs a table and text");
+            }
+            if let Some(m) = &model {
+                let Some(t) = m.tables.iter().find(|t| t.name == table) else { return err(format!("There is no table {table} in schema {schema}")) };
+                if !column.is_empty() && !t.columns.iter().any(|c| c.name == column) {
+                    return err(format!("Table {table} has no column {column}"));
+                }
+            }
+            let before = d.note(&table, &column).map(|(t, _)| t.to_string()).unwrap_or_default();
+            items.push(NoteItem { table, column, before, after: n.note.trim().into(), ..Default::default() });
+        }
+        for t in &a.terms {
+            if t.term.trim().is_empty() || t.meaning.trim().is_empty() {
+                return err("Invalid arguments for save_to_dictionary: every term needs a name and a meaning");
+            }
+            let before = d.terms.iter().find(|x| x.term.eq_ignore_ascii_case(t.term.trim())).map(|x| x.meaning.clone()).unwrap_or_default();
+            let maps_to = t.maps_to.as_deref().unwrap_or_default().trim().to_string();
+            items.push(NoteItem { term: t.term.trim().into(), maps_to, before, after: t.meaning.trim().into(), ..Default::default() });
+        }
+        let mut card = AgentMessage::Note { id: new_id(), title: a.title, status: ActionStatus::Pending, items: items.clone(), outcome: None };
+        self.put(card.clone());
+        let Some(dec) = self.decision(&card).await else {
+            self.set(&mut card, ActionStatus::Rejected, Some("Stopped".into()), None);
+            return err(STOPPED);
+        };
+        if dec.kind == DecisionKind::Reject {
+            self.set(&mut card, ActionStatus::Rejected, None, None);
+            return ToolOut { content: REJECTED.into(), is_error: false, rejected: true };
+        }
+        self.set(&mut card, ActionStatus::Approved, None, None);
+        let picks = dec.picks.unwrap_or_else(|| items.iter().enumerate().map(|(index, it)| NotePick { index, text: it.after.clone() }).collect());
+        let mut saved = vec![];
+        for p in picks {
+            let (Some(it), text) = (items.get(p.index), p.text.trim()) else { continue };
+            if text.is_empty() {
+                continue;
+            }
+            let r = if it.term.is_empty() {
+                let note = DictNote { table: it.table.clone(), column: it.column.clone(), note: text.into(), status: NoteStatus::Verified, evidence: String::new(), unsure: false };
+                self.t.store.put_note(&key, &note, false).await
+            } else {
+                let previous = d.terms.iter().find(|x| x.term.eq_ignore_ascii_case(&it.term)).map(|x| x.term.clone());
+                let term = DictTerm { term: it.term.clone(), meaning: text.into(), maps_to: it.maps_to.clone(), status: NoteStatus::Verified, evidence: String::new(), unsure: false };
+                self.t.store.put_term(&key, &term, previous.as_deref(), false).await
+            };
+            if let Err(e) = r {
+                self.set(&mut card, ActionStatus::Failed, Some(e.to_string()), None);
+                return err(format!("Approved, but saving failed: {e}"));
+            }
+            let label = if !it.term.is_empty() { it.term.clone() } else if it.column.is_empty() { it.table.clone() } else { format!("{}.{}", it.table, it.column) };
+            saved.push(format!("- {label}: {text}{}", if text != it.after { " (edited by the user)" } else { "" }));
+        }
+        let outcome = if saved.len() == 1 { "Saved 1 entry".to_string() } else { format!("Saved {} entries", saved.len()) };
+        self.set(&mut card, ActionStatus::Done, Some(outcome), None);
+        if saved.is_empty() {
+            return ok("The user approved the card but kept none of the entries.");
+        }
+        ok(format!("The user approved. Saved to the data dictionary:\n{}", saved.join("\n")))
     }
 
     /// Runs one statement on the scoped pool and registers it for `stop`. A statement error is `Err`.
@@ -565,9 +693,13 @@ impl Run<'_> {
 
     /// Registers the card as pending and waits for the user's decision; `None` = the turn was stopped.
     async fn decision(&mut self, card: &AgentMessage) -> Option<AgentDecision> {
-        let AgentMessage::Action { id, confirm_name, .. } = card else { return None };
+        let (id, confirm_name, note) = match card {
+            AgentMessage::Action { id, confirm_name, .. } => (id, confirm_name.clone(), false),
+            AgentMessage::Note { id, .. } => (id, None, true),
+            _ => return None,
+        };
         let (tx, rx) = oneshot::channel();
-        let pending = Pending { conn_id: self.h.conn_id.clone(), driver: self.t.conn.driver, confirm_name: confirm_name.clone(), tx };
+        let pending = Pending { conn_id: self.h.conn_id.clone(), driver: self.t.conn.driver, confirm_name, note, tx };
         lock(&self.t.agent.pending).insert(id.clone(), pending);
         let decision = tokio::select! {
             d = rx => d.ok(),
@@ -578,10 +710,17 @@ impl Run<'_> {
     }
 
     fn set(&mut self, card: &mut AgentMessage, to: ActionStatus, out: Option<String>, ms: Option<u64>) {
-        if let AgentMessage::Action { status, outcome, elapsed_ms, .. } = card {
-            *status = to;
-            *outcome = out;
-            *elapsed_ms = ms;
+        match card {
+            AgentMessage::Action { status, outcome, elapsed_ms, .. } => {
+                *status = to;
+                *outcome = out;
+                *elapsed_ms = ms;
+            }
+            AgentMessage::Note { status, outcome, .. } => {
+                *status = to;
+                *outcome = out;
+            }
+            _ => {}
         }
         self.put(card.clone());
     }
@@ -831,6 +970,48 @@ pub async fn stop(state: &AppState, conn_id: &str) -> AppResult<()> {
 
 pub async fn history(state: &AppState, conn_id: &str) -> AppResult<Vec<AgentMessage>> {
     Ok(state.store.load_chat(conn_id).await?.1)
+}
+
+/// Removes one exchange: the user message `id` and every entry after it up to the next user message,
+/// from the panel history and the model history (matched by id, or for chats saved before ids by
+/// the same occurrence of its text). The rest of the conversation then differs from what earlier
+/// thinking blocks were signed for, so those are stripped. False when `id` is no user message.
+pub fn delete_exchange(items: &mut Vec<ChatItem>, messages: &mut Vec<AgentMessage>, id: &str) -> bool {
+    let is_user = |m: &AgentMessage| matches!(m, AgentMessage::User { .. });
+    let Some(start) = messages.iter().position(|m| matches!(m, AgentMessage::User { id: x, .. } if x == id)) else { return false };
+    let AgentMessage::User { text, .. } = &messages[start] else { unreachable!() };
+    let text = text.clone();
+    let end = messages[start + 1..].iter().position(is_user).map_or(messages.len(), |i| start + 1 + i);
+    // Older chats: the n-th last user item with this text belongs to the n-th last such message.
+    let nth = messages[start + 1..].iter().filter(|m| matches!(m, AgentMessage::User { text: t, .. } if *t == text)).count();
+    messages.drain(start..end);
+
+    let user_at = |i: &usize| matches!(&items[*i], ChatItem::User { .. });
+    let by_id = (0..items.len()).find(|i| matches!(&items[*i], ChatItem::User { id: Some(x), .. } if x == id));
+    let by_text = || {
+        (0..items.len())
+            .rev()
+            .filter(|i| matches!(&items[*i], ChatItem::User { id: None, text: t } if *t == text))
+            .nth(nth)
+    };
+    if let Some(from) = by_id.or_else(by_text) {
+        let to = (from + 1..items.len()).find(user_at).unwrap_or(items.len());
+        items.drain(from..to);
+        super::strip_thinking(items);
+    }
+    true
+}
+
+/// Deletes one exchange (see `delete_exchange`) from a connection's saved chat.
+pub async fn delete_message(state: &AppState, conn_id: &str, id: &str) -> AppResult<()> {
+    if state.agent.is_running(conn_id) {
+        return Err(AppError::Query("Stop the agent before deleting messages".into()));
+    }
+    let (mut items, mut messages) = state.store.load_chat(conn_id).await?;
+    if !delete_exchange(&mut items, &mut messages, id) {
+        return Err(AppError::NotFound("This message is no longer in the chat".into()));
+    }
+    state.store.save_chat(conn_id, &items, &messages).await
 }
 
 pub async fn clear(state: &AppState, conn_id: &str) -> AppResult<()> {

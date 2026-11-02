@@ -41,6 +41,7 @@ const ImportSqlDialog = lazyNamed(() => import("./features/transfer/ImportSqlDia
 const KeyBrowserTab = lazyNamed(() => import("./features/redis/KeyBrowserTab"), "KeyBrowserTab");
 const ConsoleTab = lazyNamed(() => import("./features/redis/ConsoleTab"), "ConsoleTab");
 const InfoTab = lazyNamed(() => import("./features/redis/InfoTab"), "InfoTab");
+const DictionaryTab = lazyNamed(() => import("./features/dictionary/DictionaryTab"), "DictionaryTab");
 
 /** Keeps a crash inside one tab from blanking the whole window. */
 class TabBoundary extends Component<{ children: ReactNode; className?: string }, { error: Error | null }> {
@@ -88,6 +89,8 @@ function TabContent({ tab }: { tab: Tab }): ReactNode {
       return <ConsoleTab tab={tab} />;
     case "info":
       return <InfoTab tab={tab} />;
+    case "dict":
+      return <DictionaryTab tab={tab} />;
   }
 }
 

@@ -190,7 +190,8 @@ export type AppErrorKind =
   | "internal";
 
 /** `designer` = table designer; target "schema.table", or "schema.__new__<id>" for a new table. */
-export type TabKind = "sql" | "table" | "er" | "routine" | "roles" | "designer" | "trigger" | "view" | "keys" | "console" | "info";
+/** `dict` = data dictionary of the schema in `target`. */
+export type TabKind = "sql" | "table" | "er" | "routine" | "roles" | "designer" | "trigger" | "view" | "keys" | "console" | "info" | "dict";
 
 export interface Tab {
   id: string;
@@ -326,7 +327,20 @@ export type AgentMessage =
       /** After it ran: "3 rows affected", or the error. */
       outcome?: string;
     }
-  | { id: string; role: "result"; sql: string; columns: Column[]; rows: Cell[][]; truncated: boolean; elapsedMs: number };
+  | { id: string; role: "result"; sql: string; columns: Column[]; rows: Cell[][]; truncated: boolean; elapsedMs: number }
+  /** Data-dictionary entries the agent proposes; saved only when the user approves. */
+  | { id: string; role: "note"; title: string; status: ActionStatus; items: NoteItem[]; outcome?: string };
+
+/** A proposed dictionary entry: table note (`column` ""), column note, or glossary term (`term` set; `after` = meaning). */
+export interface NoteItem {
+  table: string;
+  column: string;
+  term: string;
+  mapsTo: string;
+  /** What the dictionary says now ("" = nothing yet). */
+  before: string;
+  after: string;
+}
 
 export type AgentEventBody =
   | { type: "message"; message: AgentMessage }
@@ -343,6 +357,70 @@ export interface AgentDecision {
   sql?: string;
   /** Production critical: what the user typed. */
   typedName?: string;
+  /** Dictionary cards: the entries to save, with the text the user kept or edited (undefined = all as proposed). */
+  picks?: { index: number; text: string }[];
+}
+
+// ---------- data dictionary ----------
+
+/** verified = written or approved by the user; draft = from "Learn schema", not reviewed. */
+export type NoteStatus = "verified" | "draft";
+
+/** Note on a table (`column` "") or one of its columns. */
+export interface DictNote {
+  table: string;
+  column: string;
+  note: string;
+  status: NoteStatus;
+  /** Drafts: what the AI based it on. */
+  evidence: string;
+  /** Drafts: the AI was not sure. */
+  unsure: boolean;
+}
+
+export interface DictTerm {
+  term: string;
+  meaning: string;
+  mapsTo: string;
+  status: NoteStatus;
+  evidence: string;
+  unsure: boolean;
+}
+
+/** One schema's dictionary; `comments` = the database's own COMMENTs (read-only). */
+export interface Dictionary {
+  notes: DictNote[];
+  terms: DictTerm[];
+  comments: DictNote[];
+}
+
+/** A table with notes (the navigator marks it). */
+export interface DictMark {
+  database: string;
+  schema: string;
+  table: string;
+  draft: boolean;
+}
+
+export interface LearnOptions {
+  /** Empty = every table. */
+  tables: string[];
+  samples: boolean;
+  provider: AiProvider;
+  model: string;
+  language: string;
+}
+
+/** `dict-learn` progress; `finished` with `error` = some tables failed or the run failed. */
+export interface LearnEvent {
+  id: string;
+  schema: string;
+  done: number;
+  total: number;
+  current: string;
+  drafts: number;
+  finished: boolean;
+  error?: string | null;
 }
 
 export interface AiModel {

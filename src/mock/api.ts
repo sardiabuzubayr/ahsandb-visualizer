@@ -4,6 +4,18 @@ import { ApiError, type Api } from "../lib/api";
 import { mockConnections, mockSchemaTree } from "./connections";
 import { mockCommand, mockEdit, mockGet, mockInfo, mockScan } from "./redis";
 import { mockAgentMessages } from "./agent";
+import {
+  mockDictDeleteNote,
+  mockDictDeleteTerm,
+  mockDictGet,
+  mockDictLearn,
+  mockDictLearnStop,
+  mockDictMarks,
+  mockDictPutNote,
+  mockDictPutTerm,
+  mockDictResolve,
+  mockLearnListeners,
+} from "./dictionary";
 import { analystPrivileges, erDraftSql, erRelations, erTables, mockRoles, mockRoutine, mockTrigger, mockView } from "./objects";
 import { mockResults } from "./results";
 import { ordersColumns, ordersRows } from "./tableData";
@@ -130,6 +142,11 @@ export const mockApi: Api = {
   agentStop: async (id) => mockAgentEmit(id.split("@")[0], { type: "status", running: false }),
   agentHistory: async () => mockAgentMessages,
   agentClear: async () => {},
+  agentDeleteMessage: async (_id, messageId) => {
+    const i = mockAgentMessages.findIndex((m) => m.id === messageId);
+    const end = mockAgentMessages.findIndex((m, j) => j > i && m.role === "user");
+    if (i >= 0) mockAgentMessages.splice(i, (end < 0 ? mockAgentMessages.length : end) - i);
+  },
   agentAudit: async () => [
     { at: "2026-10-30T09:12:00Z", provider: "anthropic", model: "claude-opus-5-5", level: "read", sql: "SELECT count(*) FROM orders", decision: "auto", outcome: "ok · 1 row" },
     { at: "2026-10-30T09:13:10Z", provider: "anthropic", model: "claude-opus-5-5", level: "critical", sql: "DELETE FROM sessions WHERE expires_at < now()", decision: "approved", outcome: "ok · 412 rows" },
@@ -144,6 +161,16 @@ export const mockApi: Api = {
   kvCommand: async (id, line) => (await wait(60), mockCommand(id, line)),
   kvInfo: async () => (await wait(120), mockInfo),
   kvMemory: async () => 4_194_304,
+  dictGet: async (id, schema) => (await wait(120), mockDictGet(id, schema)),
+  dictPutNote: async (id, schema, note) => mockDictPutNote(id, schema, note),
+  dictDeleteNote: async (id, schema, table, column) => mockDictDeleteNote(id, schema, table, column),
+  dictPutTerm: async (id, schema, term, previous) => mockDictPutTerm(id, schema, term, previous),
+  dictDeleteTerm: async (id, schema, term) => mockDictDeleteTerm(id, schema, term),
+  dictResolveDrafts: async (id, schema, approve, includeUnsure) => mockDictResolve(id, schema, approve, includeUnsure),
+  dictMarks: async (id) => mockDictMarks(id),
+  dictLearn: async (id, schema, options) => mockDictLearn(id, schema, options, erTables.filter((t) => !t.draft)),
+  dictLearnStop: async (id, schema) => mockDictLearnStop(id, schema),
+  onDictLearn: async (cb) => (mockLearnListeners.add(cb), () => void mockLearnListeners.delete(cb)),
 };
 
 // mock: files "saved" during a browser session.
@@ -164,7 +191,7 @@ const MOCK_MODELS: Record<AiProvider, AiModel[]> = {
 };
 const mockAgentListeners = new Set<(e: AgentEvent) => void>();
 const mockAgentEmit = (connId: string, e: AgentEventBody) => mockAgentListeners.forEach((cb) => cb({ connId, ...e }));
-const mockPending = new Map<string, { connId: string; message: Extract<AgentMessage, { role: "action" }> }>();
+const mockPending = new Map<string, { connId: string; message: Extract<AgentMessage, { role: "action" | "note" }> }>();
 async function mockAgentTurn(connId: string, text: string) {
   const say = (message: AgentMessage) => mockAgentEmit(connId, { type: "message", message });
   say({ id: `u${Date.now()}`, role: "user", text });
@@ -185,6 +212,20 @@ async function mockAgentTurn(connId: string, text: string) {
     mockPending.set(message.id, { connId, message });
     say({ id: `a${Date.now()}`, role: "agent", text: "I counted the expired sessions first. Approve the delete below if it looks right.", steps: [{ label: "Counting rows", detail: "SELECT count(*) FROM sessions WHERE expires_at < now()" }] });
     say(message);
+  } else if (/means|artinya|bukan|status/i.test(text)) {
+    const message: Extract<AgentMessage, { role: "note" }> = {
+      id: `note${Date.now()}`,
+      role: "note",
+      title: "Fix the meaning of orders.status",
+      status: "pending",
+      items: [
+        { table: "orders", column: "status", term: "", mapsTo: "", before: "open = not paid yet, paid, shipped, cancelled.", after: "open = waiting for payment, paid, shipped, cancelled (refunded orders are cancelled)." },
+        { table: "", column: "", term: "Refunded order", mapsTo: "orders.status = 'cancelled'", before: "", after: "A paid order that was cancelled and refunded." },
+      ],
+    };
+    mockPending.set(message.id, { connId, message });
+    say({ id: `a${Date.now()}`, role: "agent", text: "Thanks. The note on `orders.status` is still a draft and says otherwise. I suggest this fix:", steps: [{ label: "Reading schema", detail: "public · 6 dictionary notes, 3 terms" }] });
+    say(message);
   } else {
     say({ id: `a${Date.now()}`, role: "agent", text: "There are 1,240 orders this month; 38 are still pending.", steps: [{ label: "Running query", detail: "SELECT status, count(*) FROM orders GROUP BY status" }] });
   }
@@ -194,6 +235,11 @@ async function mockAgentDecide(actionId: string, d: AgentDecision) {
   const p = mockPending.get(actionId);
   if (!p) throw new ApiError("notFound", "This action is no longer pending");
   mockPending.delete(actionId);
+  if (p.message.role === "note") {
+    const saved = d.picks?.length ?? p.message.items.length;
+    const done: AgentMessage = d.kind === "approve" ? { ...p.message, status: "done", outcome: `Saved ${saved} ${saved === 1 ? "entry" : "entries"}` } : { ...p.message, status: "rejected" };
+    return mockAgentEmit(p.connId, { type: "message", message: done });
+  }
   const done: AgentMessage =
     d.kind === "approve"
       ? { ...p.message, status: "done", elapsedMs: 14, outcome: "412 rows affected" }

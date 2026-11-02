@@ -1,5 +1,6 @@
 import {
   Activity,
+  BookOpen,
   CodeXml,
   Eye,
   KeyRound,
@@ -35,6 +36,7 @@ const ICON: Record<TabKind, ReactNode> = {
   keys: <KeyRound size={14} aria-hidden="true" />,
   console: <Terminal size={14} aria-hidden="true" />,
   info: <Activity size={14} aria-hidden="true" />,
+  dict: <BookOpen size={14} aria-hidden="true" />,
 };
 
 export function TabBar() {

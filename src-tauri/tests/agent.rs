@@ -10,12 +10,13 @@ use std::time::Duration;
 
 use ahsandb_lib::ai::agent::{self, AgentState, Emit, Target, Turn, run_turn};
 use ahsandb_lib::ai::risk;
-use ahsandb_lib::ai::{ChatItem, ChatModel, ChatRequest, ChatResponse, StopKind, ToolCall, ToolResult};
+use ahsandb_lib::ai::{ChatItem, ChatModel, ChatRequest, ChatResponse, RawContent, StopKind, ToolCall, ToolResult};
 use ahsandb_lib::db::{self, Manager, Pool};
 use ahsandb_lib::error::{AppError, AppResult};
 use ahsandb_lib::kv;
 use ahsandb_lib::model::*;
-use ahsandb_lib::store::Store;
+use ahsandb_lib::dict::Learner;
+use ahsandb_lib::store::{DictKey, Store};
 use common::*;
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -219,11 +220,11 @@ fn results(req: &ChatRequest) -> Vec<ToolResult> {
 }
 
 fn approve(typed: Option<&str>) -> AgentDecision {
-    AgentDecision { kind: DecisionKind::Approve, sql: None, typed_name: typed.map(Into::into) }
+    AgentDecision { kind: DecisionKind::Approve, sql: None, typed_name: typed.map(Into::into), picks: None }
 }
 
 fn decision(kind: DecisionKind) -> AgentDecision {
-    AgentDecision { kind, sql: None, typed_name: None }
+    AgentDecision { kind, sql: None, typed_name: None, picks: None }
 }
 
 // ---------- loop tests ----------
@@ -252,7 +253,7 @@ async fn approve_runs_the_exact_sql_with_facts_and_audit() {
     // The model hears the outcome; the step trail shows the count.
     let reqs = fake.reqs();
     assert_eq!(reqs.len(), 2);
-    assert!(reqs.iter().all(|r| r.allow_tools && r.tools.len() == 3 && r.system.contains("SQLite")));
+    assert!(reqs.iter().all(|r| r.allow_tools && r.tools.len() == 4 && r.system.contains("SQLite")));
     let r = results(&reqs[1]);
     assert!(!r[0].is_error && r[0].content.contains("1 row affected"), "{r:?}");
     let steps = serde_json::to_string(&messages(&events)).unwrap();
@@ -303,9 +304,9 @@ async fn edit_supersedes_the_card_and_asks_again() {
             let first = pending(&mut rx).await;
             let id = action_id(&first);
             // Invalid edits are refused and the card stays pending.
-            let bad = AgentDecision { kind: DecisionKind::Edit, sql: Some("SELECT 1; SELECT 2".into()), typed_name: None };
+            let bad = AgentDecision { kind: DecisionKind::Edit, sql: Some("SELECT 1; SELECT 2".into()), typed_name: None, picks: None };
             assert!(matches!(e.agent.decide(&id, bad), Err(AppError::Query(m)) if m.contains("one statement")));
-            let edit = AgentDecision { kind: DecisionKind::Edit, sql: Some(edited.into()), typed_name: None };
+            let edit = AgentDecision { kind: DecisionKind::Edit, sql: Some(edited.into()), typed_name: None, picks: None };
             e.agent.decide(&id, edit).unwrap();
             let second = pending(&mut rx).await;
             let AgentMessage::Action { level, title, sql, .. } = &second else { unreachable!() };
@@ -492,7 +493,7 @@ async fn refusal_max_tokens_and_provider_errors() {
     let events = e.turn(&fake, "again", no_driver).await;
     assert!(events.iter().any(|e| matches!(&e.kind, AgentEventKind::Error { message } if message == "provider busy")));
     let items = e.items().await;
-    assert!(matches!(items.last(), Some(ChatItem::User { text }) if text == "again"));
+    assert!(matches!(items.last(), Some(ChatItem::User { text, .. }) if text == "again"));
     // Earlier turns are replayed to the next request.
     assert_eq!(fake.reqs()[0].items.len(), items.len());
 }
@@ -674,7 +675,7 @@ async fn redis_production_delete_needs_the_key_name() {
         assert_eq!(confirm_name.as_deref(), Some(key.as_str()));
         assert!(matches!(e.agent.decide(&action_id(&card), approve(Some("wrong"))), Err(AppError::Query(_))));
         // An edit to a blocked command is refused; the card stays pending.
-        let bad = AgentDecision { kind: DecisionKind::Edit, sql: Some("SELECT 1".into()), typed_name: None };
+        let bad = AgentDecision { kind: DecisionKind::Edit, sql: Some("SELECT 1".into()), typed_name: None, picks: None };
         assert!(matches!(e.agent.decide(&action_id(&card), bad), Err(AppError::Query(_))));
         e.agent.decide(&action_id(&card), approve(Some(&key))).unwrap();
     })
@@ -703,4 +704,237 @@ async fn redis_schema_only_and_read_only() {
     assert!(actions(&events).is_empty(), "no card on a read-only connection");
     assert_eq!(redis_run(e, &format!("GET {k}")).await, "\"secret\"");
     redis_run(e, &format!("DEL {k}")).await;
+}
+
+// ---------- data dictionary ----------
+
+/// Next pending dictionary card.
+async fn pending_note(rx: &mut UnboundedReceiver<AgentEvent>) -> (String, Vec<NoteItem>) {
+    loop {
+        let e = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.expect("no card").expect("channel closed");
+        if let AgentEventKind::Message { message: AgentMessage::Note { id, items, status: ActionStatus::Pending, .. } } = e.kind {
+            return (id, items);
+        }
+    }
+}
+
+fn main_key(e: &Env) -> DictKey {
+    DictKey { conn: e.conn.id.clone(), db: "main".into(), schema: "main".into() }
+}
+
+fn dnote(table: &str, column: &str, note: &str, status: NoteStatus) -> DictNote {
+    DictNote { table: table.into(), column: column.into(), note: note.into(), status, evidence: String::new(), unsure: false }
+}
+
+fn save_call(id: &str, input: Value) -> ChatResponse {
+    calls(vec![call(id, "save_to_dictionary", input)])
+}
+
+#[tokio::test]
+async fn dictionary_reaches_the_agent_and_cards_save_what_the_user_kept() {
+    let e = &sqlite(AiAccess::Schema, DEV, true).await;
+    let key = main_key(e);
+    e.store.put_note(&key, &dnote("orders", "status", "open = not paid yet", NoteStatus::Draft), false).await.unwrap();
+    let paid = DictTerm { term: "Paid".into(), meaning: "Order settled".into(), maps_to: "orders.status = 'paid'".into(), status: NoteStatus::Verified, evidence: String::new(), unsure: false };
+    e.store.put_term(&key, &paid, None, false).await.unwrap();
+    let fake = Fake::new(vec![
+        calls(vec![call("c1", "get_schema", json!({}))]),
+        save_call(
+            "c2",
+            json!({"title": "Fix status", "notes": [
+                {"table": "orders", "column": "status", "note": "open = awaiting payment"},
+                {"table": "orders", "note": "One order per checkout"}
+            ], "terms": [{"term": "open order", "meaning": "Not paid yet", "maps_to": "orders.status = 'open'"}]}),
+        ),
+        text("Saved."),
+    ]);
+    let events = e
+        .turn(&fake, "status open means awaiting payment", |mut rx| async move {
+            let (id, items) = pending_note(&mut rx).await;
+            assert_eq!(items.len(), 3);
+            assert_eq!((items[0].before.as_str(), items[0].after.as_str()), ("open = not paid yet", "open = awaiting payment"));
+            assert_eq!((items[1].column.as_str(), items[1].before.as_str()), ("", ""));
+            assert_eq!((items[2].term.as_str(), items[2].maps_to.as_str()), ("open order", "orders.status = 'open'"));
+            // Dictionary cards have no SQL to edit.
+            let edit = AgentDecision { kind: DecisionKind::Edit, sql: Some("x".into()), typed_name: None, picks: None };
+            assert!(matches!(e.agent.decide(&id, edit), Err(AppError::Query(_))));
+            let picks = vec![NotePick { index: 0, text: "open = awaiting payment (unpaid)".into() }, NotePick { index: 2, text: "Not paid yet".into() }];
+            e.agent.decide(&id, AgentDecision { kind: DecisionKind::Approve, sql: None, typed_name: None, picks: Some(picks) }).unwrap();
+        })
+        .await;
+    let reqs = fake.reqs();
+    assert!(reqs[0].system.contains("Business glossary"));
+    assert!(reqs[0].system.ends_with("- Paid: Order settled → orders.status = 'paid'"), "{}", reqs[0].system);
+    let schema = &results(&reqs[1])[0].content;
+    assert!(schema.contains("orders (~") || schema.contains("orders: "), "{schema}");
+    assert!(schema.contains("  status: open = not paid yet (draft)\n"), "{schema}");
+    let saved = &results(&reqs[2])[0];
+    assert!(!saved.is_error && saved.content.contains("orders.status: open = awaiting payment (unpaid) (edited by the user)"), "{saved:?}");
+    assert!(saved.content.contains("open order: Not paid yet") && !saved.content.contains("One order per checkout"));
+    let (notes, terms) = e.store.dictionary(&key).await.unwrap();
+    assert_eq!(notes, vec![dnote("orders", "status", "open = awaiting payment (unpaid)", NoteStatus::Verified)]);
+    assert_eq!(terms.iter().map(|t| (t.term.as_str(), t.status)).collect::<Vec<_>>(), [("Paid", NoteStatus::Verified), ("open order", NoteStatus::Verified)]);
+    let steps = serde_json::to_string(&messages(&events)).unwrap();
+    assert!(steps.contains("main · 1 dictionary notes, 1 terms"), "{steps}");
+    let note = messages(&events).into_iter().find(|m| matches!(m, AgentMessage::Note { .. })).unwrap();
+    assert!(matches!(note, AgentMessage::Note { status: ActionStatus::Done, outcome: Some(ref o), .. } if o == "Saved 2 entries"));
+}
+
+#[tokio::test]
+async fn dictionary_cards_can_be_rejected_and_bad_targets_are_tool_errors() {
+    let e = &sqlite(AiAccess::Schema, DEV, false).await;
+    let fake = Fake::new(vec![
+        save_call("c1", json!({"title": "x", "notes": [{"table": "ghosts", "note": "?"}]})),
+        save_call("c2", json!({"title": "x", "notes": [{"table": "orders", "column": "nope", "note": "?"}]})),
+        save_call("c3", json!({"title": "x"})),
+        save_call("c4", json!({"title": "Customers", "notes": [{"table": "customers", "note": "People who order"}]})),
+        text("Okay."),
+    ]);
+    e.turn(&fake, "remember this", |mut rx| async move {
+        let (id, _) = pending_note(&mut rx).await;
+        e.agent.decide(&id, decision(DecisionKind::Reject)).unwrap();
+    })
+    .await;
+    let reqs = fake.reqs();
+    assert!(results(&reqs[1])[0].content.contains("There is no table ghosts"));
+    assert!(results(&reqs[2])[0].content.contains("Table orders has no column nope"));
+    assert!(results(&reqs[3])[0].is_error);
+    assert_eq!(results(&reqs[4])[0].content, agent::REJECTED);
+    assert!(!reqs[4].allow_tools);
+    assert!(e.store.dictionary(&main_key(e)).await.unwrap().0.is_empty());
+}
+
+#[tokio::test]
+async fn learn_schema_writes_drafts_and_keeps_verified_notes() {
+    let e = &sqlite(AiAccess::Data, DEV, false).await;
+    let key = main_key(e);
+    e.store.put_note(&key, &dnote("orders", "status", "verified meaning", NoteStatus::Verified), false).await.unwrap();
+    let reply = |v: Value| text(&format!("```json\n{v}\n```"));
+    // Tables come in name order: customers, items, orders.
+    let fake = Fake::new(vec![
+        reply(json!({"table": {"note": "People who order"}, "columns": [
+            {"column": "name", "note": "Display name", "evidence": "sample", "unsure": false},
+            {"column": "ghost", "note": "not a column"}
+        ]})),
+        text("Sorry, I can't."),
+        reply(json!({"table": null, "columns": [
+            {"column": "status", "note": "should not replace"},
+            {"column": "customer_id", "note": "Who placed it", "unsure": true}
+        ], "terms": [{"term": "Open order", "meaning": "Not paid yet", "mapsTo": "orders.status = 'open'"}]})),
+    ]);
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let learner = Learner {
+        chat: &fake,
+        model: "fake",
+        mgr: &e.mgr,
+        pool: &e.pool,
+        conn: &e.conn,
+        store: &e.store,
+        key: key.clone(),
+        samples: true,
+        language: "id",
+        stop: &stop,
+    };
+    let mut seen = vec![];
+    let r = learner.run(&[], |p| seen.push((p.done, p.current.to_string()))).await.unwrap();
+    assert_eq!(seen, [(0, "customers".into()), (1, "items".into()), (2, "orders".into()), (3, String::new())]);
+    assert_eq!(r.drafts, 4);
+    assert_eq!(r.failed.len(), 1);
+    assert!(r.failed[0].starts_with("items:"), "{:?}", r.failed);
+    let reqs = fake.reqs();
+    assert!(reqs[0].system.contains("in Indonesian") && reqs[0].tools.is_empty());
+    let user = |i: usize| match &reqs[i].items[0] {
+        ChatItem::User { text, .. } => text.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(user(0).contains("Sample rows:") && user(0).contains("- name: a (1), b (1)"), "{}", user(0));
+    let orders = user(2);
+    assert!(orders.contains("customer_id integer FK -> customers.id"), "{orders}");
+    assert!(orders.contains("Existing notes") && orders.contains("  status: verified meaning"), "{orders}");
+    assert!(!orders.contains("- status:"), "a column with a note gets no distinct values: {orders}");
+    let (notes, terms) = e.store.dictionary(&key).await.unwrap();
+    let got: Vec<(&str, &str, &str, NoteStatus, bool)> =
+        notes.iter().map(|n| (n.table.as_str(), n.column.as_str(), n.note.as_str(), n.status, n.unsure)).collect();
+    assert_eq!(
+        got,
+        [
+            ("customers", "", "People who order", NoteStatus::Draft, false),
+            ("customers", "name", "Display name", NoteStatus::Draft, false),
+            ("orders", "customer_id", "Who placed it", NoteStatus::Draft, true),
+            ("orders", "status", "verified meaning", NoteStatus::Verified, false),
+        ]
+    );
+    assert_eq!((terms[0].term.as_str(), terms[0].maps_to.as_str(), terms[0].status), ("Open order", "orders.status = 'open'", NoteStatus::Draft));
+
+    // Without samples no rows are read; a set stop flag ends the run before the first table.
+    let fake = Fake::new(vec![reply(json!({}))]);
+    let learner = Learner { chat: &fake, samples: false, ..learner };
+    learner.run(&["customers".into()], |_| {}).await.unwrap();
+    assert!(match &fake.reqs()[0].items[0] { ChatItem::User { text, .. } => !text.contains("Sample rows"), _ => false });
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let r = learner.run(&[], |_| {}).await.unwrap();
+    assert!(r.stopped && r.drafts == 0);
+}
+
+// ---------- chat history edits ----------
+
+const MISMATCH: &str = "anthropic returned HTTP 400: messages.1.content.0: Invalid `signature` in `thinking` block. \
+The block is bound to a different conversation. Remove the block, or set `thinking.block_binding.prefix_mismatch_behavior` to \"drop_block\".";
+
+fn thought(text: &str) -> ChatItem {
+    let content = json!([{"type": "thinking", "thinking": "", "signature": "sig"}, {"type": "text", "text": text}]);
+    ChatItem::Assistant { text: text.into(), tool_calls: vec![], raw: Some(RawContent { provider: AiProvider::Anthropic, content }) }
+}
+
+fn has_thinking(items: &[ChatItem]) -> bool {
+    serde_json::to_string(items).unwrap().contains("\"thinking\"")
+}
+
+fn user(id: Option<&str>, text: &str) -> ChatItem {
+    ChatItem::User { text: text.into(), id: id.map(Into::into) }
+}
+
+#[tokio::test]
+async fn stale_thinking_blocks_are_dropped_once_and_the_request_resent() {
+    let e = &sqlite(AiAccess::Schema, DEV, false).await;
+    let msgs = vec![AgentMessage::User { id: "m1".into(), text: "hi".into() }, AgentMessage::Agent { id: "a1".into(), text: "hello".into(), steps: vec![] }];
+    e.store.save_chat(&e.conn.id, &[user(Some("m1"), "hi"), thought("hello")], &msgs).await.unwrap();
+    let fake = Fake { script: Mutex::new(VecDeque::from(vec![Err(AppError::Query(MISMATCH.into())), Ok(text("fine"))])), ..Default::default() };
+    let events = e.turn(&fake, "again", no_driver).await;
+    let reqs = fake.reqs();
+    assert_eq!(reqs.len(), 2);
+    assert!(has_thinking(&reqs[0].items) && !has_thinking(&reqs[1].items));
+    assert_eq!(agent_texts(&events).last().unwrap(), "fine");
+    assert!(!events.iter().any(|ev| matches!(ev.kind, AgentEventKind::Error { .. })));
+    assert!(!has_thinking(&e.items().await));
+
+    // A second mismatch is not retried again.
+    e.store.save_chat(&e.conn.id, &[user(None, "hi"), thought("hello")], &msgs).await.unwrap();
+    let fake = Fake { script: Mutex::new(VecDeque::from(vec![Err(AppError::Query(MISMATCH.into())), Err(AppError::Query(MISMATCH.into()))])), ..Default::default() };
+    let events = e.turn(&fake, "once more", no_driver).await;
+    assert_eq!(fake.reqs().len(), 2);
+    assert!(events.iter().any(|ev| matches!(&ev.kind, AgentEventKind::Error { message } if message.contains("different conversation"))));
+}
+
+#[test]
+fn deleting_an_exchange_removes_its_answer_from_both_histories() {
+    let u = |id: &str, text: &str| AgentMessage::User { id: id.into(), text: text.into() };
+    let a = |id: &str| AgentMessage::Agent { id: id.into(), text: "x".into(), steps: vec![] };
+    let mut messages = vec![u("m1", "q1"), a("a1"), u("m2", "q2"), a("a2"), u("m3", "q3")];
+    let results = ChatItem::ToolResults { results: vec![ToolResult { call_id: "c".into(), content: "r".into(), is_error: false }] };
+    let mut items = vec![user(Some("m1"), "q1"), thought("t1"), user(Some("m2"), "q2"), thought("t2"), results, user(Some("m3"), "q3"), thought("t3")];
+    assert!(agent::delete_exchange(&mut items, &mut messages, "m2"));
+    let ids: Vec<String> = messages.iter().map(|m| serde_json::to_value(m).unwrap()["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids, ["m1", "a1", "m3"]);
+    assert_eq!(items.len(), 4);
+    assert!(matches!(&items[2], ChatItem::User { text, .. } if text == "q3"));
+    assert!(!has_thinking(&items), "an edit in the middle invalidates every thinking block");
+    assert!(!agent::delete_exchange(&mut items, &mut messages, "a1"), "only user messages start an exchange");
+
+    // Chats saved before user items had ids: the same occurrence of the text, counted from the end.
+    let mut messages = vec![u("m1", "same"), a("a1"), u("m2", "same"), a("a2")];
+    let mut items = vec![user(None, "same"), thought("first"), user(None, "same"), thought("second")];
+    assert!(agent::delete_exchange(&mut items, &mut messages, "m1"));
+    assert_eq!(items.len(), 2);
+    assert!(matches!(&items[1], ChatItem::Assistant { text, .. } if text == "second"));
 }

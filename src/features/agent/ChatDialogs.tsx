@@ -7,8 +7,20 @@ import { errorText } from "../../components/shell/useConnect";
 import type { AiProvider, AuditEntry } from "../../types";
 import { Button, Dialog, DialogHeader, cn } from "../../components/ui";
 
-/** "Clear chat?" — deletes this connection's conversation; the audit log stays. */
-export function ClearChatDialog({ name, onConfirm, onClose }: { name: string; onConfirm: () => Promise<void>; onClose: () => void }) {
+/** Destructive chat confirmation: "Clear chat?" (whole conversation) or "Delete message?" (one exchange). The audit log stays. */
+export function ConfirmChatDialog({
+  title,
+  body,
+  confirm,
+  onConfirm,
+  onClose,
+}: {
+  title: string;
+  body: string;
+  confirm: string;
+  onConfirm: () => Promise<void>;
+  onClose: () => void;
+}) {
   const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -25,9 +37,9 @@ export function ClearChatDialog({ name, onConfirm, onClose }: { name: string; on
   };
   return (
     <Dialog open onClose={onClose} labelledBy="agent-clear-title" className="top-[18%] max-w-[420px]">
-      <DialogHeader id="agent-clear-title" title={t("agent.clear.title")} onClose={onClose} />
+      <DialogHeader id="agent-clear-title" title={title} onClose={onClose} />
       <div className="flex flex-col gap-3 px-5 py-4">
-        <p className="m-0 text-muted">{t("agent.clear.body", { name })}</p>
+        <p className="m-0 text-muted">{body}</p>
         {error && (
           <p role="alert" className="m-0 break-words text-prod">
             {error}
@@ -38,7 +50,7 @@ export function ClearChatDialog({ name, onConfirm, onClose }: { name: string; on
             {t("common.cancel")}
           </Button>
           <Button variant="danger" size="lg" disabled={busy} onClick={() => void clear()}>
-            {t("agent.clear.confirm")}
+            {confirm}
           </Button>
         </div>
       </div>

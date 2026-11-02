@@ -41,6 +41,7 @@ export type NodeAction =
   | "newSql"
   | "copyName"
   | "openEr"
+  | "openDictionary"
   | "refresh"
   | "open"
   | "editTable"
@@ -75,12 +76,12 @@ export function nodeActions(n: SchemaNode, driver?: Driver): NodeAction[] {
   if (n.kind === "database" && isServerDriver(driver)) return [...nodeActions(n), "newDatabase", "renameDatabase", "dropDatabase"];
   switch (n.kind) {
     case "table":
-      return ["openData", "newSql", "copyName", "openEr", "editTable", "newTrigger", "exportData", "importData", "dropTable"];
+      return ["openData", "newSql", "copyName", "openEr", "openDictionary", "editTable", "newTrigger", "exportData", "importData", "dropTable"];
     case "view":
       return ["openData", "editView", "newSql", "copyName", "openEr", "dropView"];
     case "schema":
     case "database":
-      return erSchemaOf(n) ? ["openEr", "newTable", "newView", "export", "importSql", "refresh"] : ["export", "importSql", "refresh"];
+      return erSchemaOf(n) ? ["openEr", "openDictionary", "newTable", "newView", "export", "importSql", "refresh"] : ["export", "importSql", "refresh"];
     case "group":
       return n.id.endsWith("/triggers") ? ["newTrigger", "refresh"] : ["refresh"];
     case "trigger":

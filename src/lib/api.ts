@@ -50,6 +50,12 @@ import type {
   KvInfoSection,
   KvReply,
   KvScanPage,
+  DictMark,
+  DictNote,
+  DictTerm,
+  Dictionary,
+  LearnEvent,
+  LearnOptions,
 } from "../types";
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -161,6 +167,8 @@ export interface Api {
   agentStop(id: string): Promise<void>;
   agentHistory(id: string): Promise<AgentMessage[]>;
   agentClear(id: string): Promise<void>;
+  /** Deletes a user message and the agent's answer to it (panel and model history). */
+  agentDeleteMessage(id: string, messageId: string): Promise<void>;
   agentAudit(id: string, limit: number): Promise<AuditEntry[]>;
   onAgentEvent(cb: (e: AgentEvent) => void): Promise<() => void>;
   /** .sql files picked in the OS dialogs (UTF-8, max 20 MB). */
@@ -180,6 +188,22 @@ export interface Api {
   kvInfo(id: string): Promise<KvInfoSection[]>;
   /** Memory the whole server uses (Redis has no per-database figure). */
   kvMemory(id: string): Promise<number | null>;
+  // Data dictionary of one schema (`id` may be scoped to a PostgreSQL database). Stored in the app, never in the database.
+  dictGet(id: string, schema: string): Promise<Dictionary>;
+  /** Upsert; an empty note deletes it. */
+  dictPutNote(id: string, schema: string, note: DictNote): Promise<void>;
+  dictDeleteNote(id: string, schema: string, table: string, column: string): Promise<void>;
+  /** `previous` = the old name when the term was renamed. A duplicate name → query error. */
+  dictPutTerm(id: string, schema: string, term: DictTerm, previous: string | null): Promise<void>;
+  dictDeleteTerm(id: string, schema: string, term: string): Promise<void>;
+  /** Approve or reject all drafts (`includeUnsure` false = only the confident ones); returns how many. */
+  dictResolveDrafts(id: string, schema: string, approve: boolean, includeUnsure: boolean): Promise<number>;
+  /** Tables with notes on a connection, all databases. */
+  dictMarks(id: string): Promise<DictMark[]>;
+  /** Starts "Learn schema"; progress via onDictLearn. */
+  dictLearn(id: string, schema: string, options: LearnOptions): Promise<void>;
+  dictLearnStop(id: string, schema: string): Promise<void>;
+  onDictLearn(cb: (e: LearnEvent) => void): Promise<() => void>;
 }
 
 const real: Api = {
@@ -240,6 +264,7 @@ const real: Api = {
   agentStop: (id) => call("agent_stop", { id }),
   agentHistory: (id) => call("agent_history", { id }),
   agentClear: (id) => call("agent_clear", { id }),
+  agentDeleteMessage: (id, messageId) => call("agent_delete_message", { id, messageId }),
   agentAudit: (id, limit) => call("agent_audit", { id, limit }),
   onAgentEvent: (cb) => listen<AgentEvent>("agent-event", (e) => cb(e.payload)),
   readTextFile: (path) => call("read_text_file", { path }),
@@ -251,6 +276,16 @@ const real: Api = {
   kvCommand: (id, line, confirmed) => call("kv_command", { id, line, confirmed }),
   kvInfo: (id) => call("kv_info", { id }),
   kvMemory: (id) => call("kv_memory", { id }),
+  dictGet: (id, schema) => call("dict_get", { id, schema }),
+  dictPutNote: (id, schema, note) => call("dict_put_note", { id, schema, note }),
+  dictDeleteNote: (id, schema, table, column) => call("dict_delete_note", { id, schema, table, column }),
+  dictPutTerm: (id, schema, term, previous) => call("dict_put_term", { id, schema, term, previous }),
+  dictDeleteTerm: (id, schema, term) => call("dict_delete_term", { id, schema, term }),
+  dictResolveDrafts: (id, schema, approve, includeUnsure) => call("dict_resolve_drafts", { id, schema, approve, includeUnsure }),
+  dictMarks: (id) => call("dict_marks", { id }),
+  dictLearn: (id, schema, options) => call("dict_learn", { id, schema, options }),
+  dictLearnStop: (id, schema) => call("dict_learn_stop", { id, schema }),
+  onDictLearn: (cb) => listen<LearnEvent>("dict-learn", (e) => cb(e.payload)),
 };
 
 // Development in a plain browser uses the mock; production builds drop it (import.meta.env.DEV is false there).

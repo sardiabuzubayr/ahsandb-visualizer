@@ -2,6 +2,7 @@ pub mod ai;
 mod commands;
 pub mod db;
 pub mod ddl;
+pub mod dict;
 pub mod error;
 pub mod kv;
 pub mod model;
@@ -19,6 +20,8 @@ pub struct AppState {
     pub secrets: Box<dyn secrets::SecretStore>,
     pub db: db::Manager,
     pub agent: ai::agent::AgentState,
+    /// Running "Learn schema" runs ("<id>\n<schema>") and their stop flags.
+    pub learning: std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -34,7 +37,7 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let store = tauri::async_runtime::block_on(store::Store::open(&dir.join("app.db")))?;
             let secrets = secrets::FileSecrets::open(&dir)?;
-            app.manage(AppState { store, secrets: Box::new(secrets), db: db::Manager::default(), agent: ai::agent::AgentState::default() });
+            app.manage(AppState { store, secrets: Box::new(secrets), db: db::Manager::default(), agent: ai::agent::AgentState::default(), learning: Default::default() });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -90,7 +93,17 @@ pub fn run() {
             commands::agent_stop,
             commands::agent_history,
             commands::agent_clear,
+            commands::agent_delete_message,
             commands::agent_audit,
+            commands::dict_get,
+            commands::dict_put_note,
+            commands::dict_delete_note,
+            commands::dict_put_term,
+            commands::dict_delete_term,
+            commands::dict_resolve_drafts,
+            commands::dict_marks,
+            commands::dict_learn,
+            commands::dict_learn_stop,
             commands::read_text_file,
             commands::write_text_file,
             commands::write_base64_file,

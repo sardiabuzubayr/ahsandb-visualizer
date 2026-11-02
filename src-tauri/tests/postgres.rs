@@ -157,3 +157,18 @@ async fn enum_column_values() {
     assert_eq!(cols[1].enum_values, ["sad", "it's ok", "happy"]);
     assert!(cols[0].enum_values.is_empty() && cols[2].enum_values.is_empty());
 }
+
+#[tokio::test]
+async fn dictionary_reads_comments() {
+    let Some(c) = pg() else { return };
+    let (mgr, pool) = open(&c).await;
+    let s = format!("ahsandb_t_{}", rand_suffix());
+    exec(&mgr, &pool, &c, &format!("CREATE SCHEMA {s}; CREATE TABLE {s}.bills (id int PRIMARY KEY, status int2, amount numeric);
+        COMMENT ON TABLE {s}.bills IS 'One bill per month'; COMMENT ON COLUMN {s}.bills.status IS '1 = active, 2 = waived'")).await.unwrap();
+    let got = ahsandb_lib::dict::comments(&pool, &s).await;
+    let db = ahsandb_lib::dict::database_name(&pool, &s).await;
+    exec(&mgr, &pool, &c, &format!("DROP SCHEMA {s} CASCADE")).await.unwrap();
+    let got: Vec<(String, String, String)> = got.unwrap().into_iter().map(|n| (n.table, n.column, n.note)).collect();
+    assert_eq!(got, [("bills".into(), "".into(), "One bill per month".into()), ("bills".into(), "status".into(), "1 = active, 2 = waived".into())]);
+    assert_eq!(Some(db), c.database);
+}

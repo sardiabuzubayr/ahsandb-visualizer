@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { confirmMatches } from "./confirm";
 import type { AgentEvent, AgentMessage } from "../../types";
-import { actionStatusView, applyAgentEvent, approveDecision, cellText, editDecision, type ActionMessage } from "./messages";
+import { actionStatusView, applyAgentEvent, approveDecision, cellText, editDecision, messageText, type ActionMessage } from "./messages";
 
 test("type-to-confirm is exact, case-sensitive and trims the typed text", () => {
   expect(confirmMatches("order_items_backup_2024", "order_items_backup_2024")).toBe(true);
@@ -78,4 +78,22 @@ test("cellText shows NULL for missing values", () => {
   expect(cellText(null)).toBe("NULL");
   expect(cellText(0)).toBe("0");
   expect(cellText("x")).toBe("x");
+});
+
+test("copy text: message text, SQL, result rows as TSV, dictionary entries", () => {
+  expect(messageText({ id: "1", role: "user", text: " hi " })).toBe("hi");
+  expect(messageText({ id: "2", role: "agent", text: "", steps: [] })).toBe("");
+  const result: AgentMessage = { id: "3", role: "result", sql: "SELECT", columns: [{ name: "id", type: "int" }, { name: "note", type: "text" }], rows: [[1, null]], truncated: false, elapsedMs: 1 };
+  expect(messageText(result)).toBe("id\tnote\n1\tNULL");
+  const note: AgentMessage = {
+    id: "4",
+    role: "note",
+    title: "t",
+    status: "pending",
+    items: [
+      { table: "bills", column: "status", term: "", mapsTo: "", before: "", after: "1 = active" },
+      { table: "", column: "", term: "Paid", mapsTo: "x", before: "", after: "settled" },
+    ],
+  };
+  expect(messageText(note)).toBe("bills.status: 1 = active\nPaid: settled");
 });

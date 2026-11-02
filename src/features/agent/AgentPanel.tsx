@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { ArrowUp, Check, ChevronDown, Ellipsis, KeyRound, Loader2, Maximize2, MessageSquare, Minimize2, Square, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, Copy, Ellipsis, KeyRound, Loader2, Maximize2, MessageSquare, Minimize2, Square, Table2, Trash2, X } from "lucide-react";
 import { writePref } from "../../lib/storage";
 import { useT } from "../../i18n";
 import { api, isApiError } from "../../lib/api";
@@ -13,9 +13,12 @@ import type { AgentDecision, AgentEvent, AgentMessage, AiAccess, AiProvider, Env
 import { Button, EnvDot, IconButton, Menu, cn } from "../../components/ui";
 import { Markdown } from "./Markdown";
 import { ApprovalCard } from "./ApprovalCard";
-import { AuditDialog, ClearChatDialog } from "./ChatDialogs";
+import { NoteCard } from "./NoteCard";
+import { dictChanged } from "../dictionary/dictionary";
+import { AuditDialog, ConfirmChatDialog } from "./ChatDialogs";
 import { ResultView } from "./ResultView";
-import { applyAgentEvent, bareId, upsertMessage } from "./messages";
+import { applyAgentEvent, bareId, messageText, upsertMessage } from "./messages";
+import { insertMention, matchTables, mentionAt } from "./mention";
 
 const envChip: Record<Env, string> = { prod: "bg-prod-bg text-prod", staging: "bg-stg-bg text-stg", dev: "bg-dev-bg text-dev" };
 // shortcut: the shared Menu has no scroll, so each provider shows a few models + a link to Settings; add scrolling to Menu if users want all here.
@@ -92,7 +95,37 @@ function Panel() {
   const [fail, setFail] = useState<Fail | null>(null);
   const [draft, setDraft] = useState("");
   const [dialog, setDialog] = useState<"clear" | "audit" | null>(null);
+  // User message whose exchange the "Delete message?" dialog is about.
+  const [deleting, setDeleting] = useState<string | null>(null);
   const end = useRef<HTMLDivElement>(null);
+  // @table mentions: tables of the database the agent works on (the same scoped id it is sent).
+  const input = useRef<HTMLTextAreaElement>(null);
+  const [caret, setCaret] = useState(0);
+  const [tables, setTables] = useState<Record<string, string[]>>({});
+  const [pick, setPick] = useState(0);
+  // "@" position whose list was closed with Escape (it stays closed while typing that mention).
+  const [dismissed, setDismissed] = useState<number | null>(null);
+  useEffect(() => {
+    setTables({});
+    if (!conn.connected || conn.driver === "redis") return;
+    let live = true;
+    api.completionSchema(sid).then(
+      (s) => live && setTables(s),
+      () => {}, // no list: "@" just stays text
+    );
+    return () => void (live = false);
+  }, [sid, conn.connected, conn.driver]);
+  const mention = mentionAt(draft, caret);
+  const options = mention && mention.start !== dismissed ? matchTables(Object.keys(tables), mention.query) : [];
+  const picked = Math.min(pick, options.length - 1);
+  const choose = (table: string) => {
+    if (!mention) return;
+    const r = insertMention(draft, mention, caret, table);
+    setDraft(r.text);
+    setCaret(r.caret);
+    setPick(0);
+    requestAnimationFrame(() => input.current?.setSelectionRange(r.caret, r.caret));
+  };
 
   // The event listener is registered once; it reads where the panel is now through this ref.
   const here = useRef({ connId: conn.id, database });
@@ -111,6 +144,7 @@ function Panel() {
       const { connId } = here.current;
       if (bareId(e.connId) !== connId) return;
       setMessages((ms) => applyAgentEvent(ms, e, connId));
+      if (e.type === "message" && e.message.role === "note" && e.message.status === "done") dictChanged();
       if (e.type === "status") setRunning(e.running);
       else if (e.type === "error") setFail({ kind: "other", text: e.message });
       else if (e.type === "openSql") openSql(e.sql);
@@ -332,8 +366,9 @@ function Panel() {
             className={cn("flex min-h-0 flex-1 flex-col gap-3.5 overflow-auto p-3.5 *:shrink-0", state.agentMaximized && WIDE)}
           >
             {messages.length === 0 && <p className="m-0 text-muted">{t("agent.intro")}</p>}
-            {messages.map((m) =>
-              m.role === "user" ? (
+            {messages.map((m) => {
+              const copy = messageText(m);
+              const body = m.role === "user" ? (
                 <div key={m.id} className="max-w-[88%] self-end rounded-[12px_12px_4px_12px] bg-raised px-3 py-2.5 whitespace-pre-wrap">
                   {m.text}
                 </div>
@@ -362,10 +397,38 @@ function Panel() {
                 </div>
               ) : m.role === "action" ? (
                 <ApprovalCard key={m.id} msg={m} onDecide={decide(m.id)} />
+              ) : m.role === "note" ? (
+                <NoteCard key={m.id} msg={m} onDecide={decide(m.id)} />
               ) : (
                 <ResultView key={m.id} msg={m} onOpen={openSql} />
-              ),
-            )}
+              );
+              return (
+                <div key={m.id} className={cn("group/msg flex flex-col gap-1", m.role === "user" ? "items-end" : "items-stretch")}>
+                  {body}
+                  <div className={cn("flex gap-0.5 opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100", m.role === "user" ? "self-end" : "self-start")}>
+                    {copy && (
+                      <IconButton
+                        size={24}
+                        label={t("agent.copy")}
+                        onClick={() =>
+                          void navigator.clipboard.writeText(copy).then(
+                            () => toast(t("agent.copied")),
+                            (e: unknown) => toast(errorText(e)),
+                          )
+                        }
+                      >
+                        <Copy size={12} aria-hidden="true" />
+                      </IconButton>
+                    )}
+                    {m.role === "user" && (
+                      <IconButton size={24} label={t("agent.deleteMessage")} disabled={running} onClick={() => setDeleting(m.id)}>
+                        <Trash2 size={12} aria-hidden="true" />
+                      </IconButton>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
             {running && (
               <p role="status" className="m-0 flex items-center gap-2 text-xs text-muted">
                 <Loader2 size={13} className="animate-spin" aria-hidden="true" />
@@ -399,15 +462,51 @@ function Panel() {
                 </Button>
               </div>
             ) : (
-              <div className="flex items-end gap-2 rounded-[10px] border border-border-strong bg-surface py-2 pr-2 pl-3 focus-within:border-accent">
+              <div className="relative flex items-end gap-2 rounded-[10px] border border-border-strong bg-surface py-2 pr-2 pl-3 focus-within:border-accent">
+                {options.length > 0 && (
+                  <div
+                    id="agent-mentions"
+                    role="listbox"
+                    aria-label={t("agent.mention.label")}
+                    className="absolute right-0 bottom-full left-0 z-20 mb-1.5 max-h-72 overflow-auto rounded-lg border border-border-strong bg-panel p-1 shadow-[0_12px_32px_rgba(0,0,0,.45)]"
+                  >
+                    <div className="px-2 pt-1 pb-1.5 text-[11px] font-semibold tracking-[.06em] text-muted uppercase">{t("agent.mention.label")}</div>
+                    {options.map((name, i) => (
+                      <div
+                        key={name}
+                        id={`agent-mention-${i}`}
+                        role="option"
+                        aria-selected={i === picked}
+                        onMouseDown={(e) => (e.preventDefault(), choose(name))}
+                        onMouseEnter={() => setPick(i)}
+                        className={cn("flex h-8 cursor-pointer items-center gap-2 rounded-md px-2", i === picked ? "bg-raised text-text" : "text-muted")}
+                      >
+                        <Table2 size={13} aria-hidden="true" className="shrink-0 text-faint" />
+                        <span className="min-w-0 flex-1 truncate font-mono text-[12.5px]">{name}</span>
+                        <span className="shrink-0 text-[11px] text-faint">{t("agent.mention.columns", { n: tables[name]?.length ?? 0 })}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <textarea
+                  ref={input}
                   aria-label={t("agent.message")}
+                  aria-autocomplete="list"
+                  aria-controls={options.length ? "agent-mentions" : undefined}
+                  aria-activedescendant={options.length ? `agent-mention-${picked}` : undefined}
                   rows={2}
                   value={draft}
                   disabled={running}
                   placeholder={t("agent.placeholder")}
-                  onChange={(e) => setDraft(e.target.value)}
+                  onChange={(e) => (setDraft(e.target.value), setCaret(e.target.selectionStart))}
+                  onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
                   onKeyDown={(e) => {
+                    if (options.length && !e.nativeEvent.isComposing) {
+                      const move = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+                      if (move) return (e.preventDefault(), setPick((picked + move + options.length) % options.length));
+                      if (e.key === "Enter" || e.key === "Tab") return (e.preventDefault(), choose(options[picked]));
+                      if (e.key === "Escape") return (e.preventDefault(), e.stopPropagation(), setDismissed(mention?.start ?? null));
+                    }
                     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       void send();
@@ -445,9 +544,23 @@ function Panel() {
         </>
       )}
 
+      {deleting && (
+        <ConfirmChatDialog
+          title={t("agent.deleteMessage.title")}
+          body={t("agent.deleteMessage.body")}
+          confirm={t("agent.deleteMessage.confirm")}
+          onClose={() => setDeleting(null)}
+          onConfirm={async () => {
+            await api.agentDeleteMessage(sid, deleting);
+            setMessages(await api.agentHistory(sid));
+          }}
+        />
+      )}
       {dialog === "clear" && (
-        <ClearChatDialog
-          name={conn.name}
+        <ConfirmChatDialog
+          title={t("agent.clear.title")}
+          body={t("agent.clear.body", { name: conn.name })}
+          confirm={t("agent.clear.confirm")}
           onClose={() => setDialog(null)}
           onConfirm={async () => {
             await api.agentClear(sid);

@@ -5,7 +5,7 @@ import type { Tab } from "../types";
 const TABS = "session.sqlTabs"; // key kept from when only SQL tabs were saved
 const sqlKey = (tabId: string) => `session.sql.${tabId}`;
 // Object editors hold unsaved drafts that can't be rebuilt, so only these come back.
-const RESTORED: Tab["kind"][] = ["sql", "table", "er", "keys", "console", "info"];
+const RESTORED: Tab["kind"][] = ["sql", "table", "er", "keys", "console", "info", "dict"];
 
 export interface Saved {
   tabs: Tab[];

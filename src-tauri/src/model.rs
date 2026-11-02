@@ -895,6 +895,36 @@ pub enum AgentMessage {
     /// Rows of a read query the agent ran (first rows only).
     #[serde(rename_all = "camelCase")]
     Result { id: String, sql: String, columns: Vec<Column>, rows: Vec<Vec<Cell>>, truncated: bool, elapsed_ms: u64 },
+    /// Data-dictionary changes the agent proposes; saved only when the user approves.
+    #[serde(rename_all = "camelCase")]
+    Note {
+        id: String,
+        title: String,
+        status: ActionStatus,
+        items: Vec<NoteItem>,
+        /// After a decision: e.g. "Saved 2 entries".
+        #[serde(default)]
+        outcome: Option<String>,
+    },
+}
+
+/// One proposed dictionary change: a table note (`column` empty), a column note, or a glossary term
+/// (`term` set; `after` = its meaning).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteItem {
+    #[serde(default)]
+    pub table: String,
+    #[serde(default)]
+    pub column: String,
+    #[serde(default)]
+    pub term: String,
+    #[serde(default)]
+    pub maps_to: String,
+    /// What the dictionary says now (empty = nothing yet).
+    #[serde(default)]
+    pub before: String,
+    pub after: String,
 }
 
 /// `agent-event` payload. `conn_id` is the bare connection id.
@@ -938,6 +968,112 @@ pub struct AgentDecision {
     /// Production critical approvals: what the user typed (must equal `confirm_name`).
     #[serde(default)]
     pub typed_name: Option<String>,
+    /// Dictionary cards: the items to save (index into the card's items) with the text the user
+    /// kept or edited; `None` = all, as proposed.
+    #[serde(default)]
+    pub picks: Option<Vec<NotePick>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotePick {
+    pub index: usize,
+    pub text: String,
+}
+
+// ---------- data dictionary ----------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteStatus {
+    /// Written or approved by the user.
+    Verified,
+    /// Written by "Learn schema", not reviewed yet.
+    Draft,
+}
+
+/// A note on a table (`column` empty) or one of its columns.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictNote {
+    pub table: String,
+    #[serde(default)]
+    pub column: String,
+    pub note: String,
+    pub status: NoteStatus,
+    /// Drafts: what the AI based the note on.
+    #[serde(default)]
+    pub evidence: String,
+    /// Drafts: the AI was not sure.
+    #[serde(default)]
+    pub unsure: bool,
+}
+
+/// A business term and the tables/columns/conditions it maps to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictTerm {
+    pub term: String,
+    pub meaning: String,
+    #[serde(default)]
+    pub maps_to: String,
+    pub status: NoteStatus,
+    #[serde(default)]
+    pub evidence: String,
+    #[serde(default)]
+    pub unsure: bool,
+}
+
+/// The dictionary of one schema: saved notes and terms, plus the database's own comments (read-only).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Dictionary {
+    pub notes: Vec<DictNote>,
+    pub terms: Vec<DictTerm>,
+    pub comments: Vec<DictNote>,
+}
+
+/// A table that has dictionary notes (the navigator marks it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictMark {
+    pub database: String,
+    pub schema: String,
+    pub table: String,
+    /// Some of its notes are unreviewed drafts.
+    pub draft: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LearnOptions {
+    /// Tables to learn; empty = every table of the schema.
+    #[serde(default)]
+    pub tables: Vec<String>,
+    /// Also read sample rows and distinct values (needs AI data access).
+    pub samples: bool,
+    pub provider: AiProvider,
+    pub model: String,
+    /// Language the notes are written in (e.g. "en", "id").
+    pub language: String,
+}
+
+/// `dict-learn` progress payload. `id` = the IPC id the learning runs on.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LearnEvent {
+    pub id: String,
+    pub schema: String,
+    pub done: u32,
+    pub total: u32,
+    /// Table being read now (empty when finished).
+    pub current: String,
+    /// Drafts written so far.
+    pub drafts: u32,
+    pub finished: bool,
+    /// Finished with a problem (some tables failed, or the run stopped early).
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

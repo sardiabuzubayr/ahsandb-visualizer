@@ -69,7 +69,7 @@ pub fn build_request(provider: AiProvider, req: &ChatRequest) -> Value {
     }
     for item in &req.items {
         match item {
-            ChatItem::User { text } => messages.push(json!({"role": "user", "content": text})),
+            ChatItem::User { text, .. } => messages.push(json!({"role": "user", "content": text})),
             // Same provider: the stored message object as-is (keeps e.g. DeepSeek `reasoning_content`).
             ChatItem::Assistant { raw: Some(RawContent { provider: p, content }), .. } if *p == provider => {
                 messages.push(content.clone())
@@ -216,7 +216,7 @@ mod tests {
 
     fn history(raw_provider: AiProvider) -> Vec<ChatItem> {
         vec![
-            ChatItem::User { text: "count".into() },
+            ChatItem::User { text: "count".into(), id: None },
             ChatItem::Assistant {
                 text: String::new(),
                 tool_calls: vec![call()],

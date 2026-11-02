@@ -94,7 +94,7 @@ fn messages(items: &[ChatItem]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for item in items {
         let (role, blocks): (&str, Vec<Value>) = match item {
-            ChatItem::User { text } => ("user", vec![json!({"type": "text", "text": text})]),
+            ChatItem::User { text, .. } => ("user", vec![json!({"type": "text", "text": text})]),
             // Own blocks (thinking, fallback markers…) must go back unchanged.
             ChatItem::Assistant { raw: Some(RawContent { provider: AiProvider::Anthropic, content }), .. } => {
                 ("assistant", content.as_array().cloned().unwrap_or_default())
@@ -190,7 +190,7 @@ mod tests {
     }
 
     fn user(t: &str) -> ChatItem {
-        ChatItem::User { text: t.into() }
+        ChatItem::User { text: t.into(), id: None }
     }
 
     fn call() -> ToolCall {
