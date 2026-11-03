@@ -17,6 +17,14 @@ describe("pendingReducer", () => {
     expect(list).toEqual([]);
   });
 
+  test("deleteRows marks each selected row once and drops new rows", () => {
+    const start = pendingReducer(pendingReducer([], { type: "delete", key: "1" }), { type: "add", tempId: "new-0", values: {} });
+    expect(pendingReducer(start, { type: "deleteRows", keys: ["1", "2", "new-0"] })).toEqual([
+      { kind: "delete", rowKey: "1" },
+      { kind: "delete", rowKey: "2" },
+    ]);
+  });
+
   test("add row, edit it, delete it leaves nothing", () => {
     let list = pendingReducer([], { type: "add", tempId: "new-2", values: { status: null } });
     expect(list).toEqual([{ kind: "insert", tempId: "new-2", values: { status: null } }]);

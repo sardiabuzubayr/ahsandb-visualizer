@@ -5,7 +5,6 @@ import { api, isApiError } from "../../lib/api";
 import { useApp, useConnection, useTabDirty, useToast } from "../../state/app";
 import type { Cell, Column, ForeignKeyDef, OrderBy, Tab, TablePage } from "../../types";
 import { Button, IconButton, cn } from "../../components/ui";
-import { colWidth } from "../editor/ResultGrid";
 import { ResizeHandle, gridKey, useColumnWidths } from "../editor/columnWidths";
 import { formatCell } from "../editor/format";
 import { useConnectionError } from "../../components/shell/connectionError";
@@ -13,7 +12,7 @@ import { scopedId } from "../../lib/scope";
 import { firstDatabase } from "../editor/treeScope";
 import { PendingChangesPanel } from "./PendingChangesPanel";
 import { pendingReducer, rowKeyOf } from "./pending";
-import { followForeignKey, nextSort, selectRows, splitTarget } from "./table";
+import { followForeignKey, nextSort, selectRows, splitTarget, straightQuotes } from "./table";
 
 const PAGE = 200;
 const isBinary = (c: Column) => /bytea|blob|binary/i.test(c.type);
@@ -35,6 +34,9 @@ function KeyBadge({ col }: { col: Column }) {
     </span>
   );
 }
+
+/** Header room besides the name: the PK/FK badge and the sort arrow. */
+const headRoom = (c: Column) => (c.pk || c.fk ? 30 : 0) + 16;
 
 export function TableDataTab({ tab }: { tab: Tab }) {
   const t = useT();
@@ -107,7 +109,7 @@ export function TableDataTab({ tab }: { tab: Tab }) {
     const k = keyColumns.find((x) => x.name === c.name);
     return k ? { ...c, pk: c.pk || k.pk, fk: c.fk || k.fk } : c;
   });
-  const colWidths = useColumnWidths(gridKey(conn.id, tab.database ?? "", schema, table), columns, colWidth);
+  const colWidths = useColumnWidths(gridKey(conn.id, tab.database ?? "", schema, table), columns, page.rows, headRoom);
   const rows = page.rows;
   const pkIdxs = columns.flatMap((c, i) => (c.pk ? [i] : []));
   const rowKey = (row: Cell[], i: number) => rowKeyOf(row, pkIdxs, i);
@@ -133,8 +135,11 @@ export function TableDataTab({ tab }: { tab: Tab }) {
     const to = followForeignKey(conn.driver, fk, schema, page.columns.map((c) => c.name), row);
     if (to) app.dispatch({ type: "openTab", kind: "table", connectionId: conn.id, title: to.table, target: to.target, database: tab.database, filter: to.filter });
   };
+  const toDelete = canEdit ? [...selected].filter((k) => !deleted.has(k)) : [];
+  const deleteSelected = () => toDelete.length && dispatch({ type: "deleteRows", keys: toDelete });
+
   const applyFilter = () => {
-    const f = filterDraft?.trim() ?? "";
+    const f = straightQuotes(filterDraft?.trim() ?? "");
     setFilterDraft(null);
     setFilter(f || null);
   };
@@ -306,6 +311,9 @@ export function TableDataTab({ tab }: { tab: Tab }) {
                 if (e.key === "Escape") setFilterDraft(null);
               }}
               onBlur={() => setFilterDraft(null)}
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
               className="h-[26px] min-w-[280px] flex-[0_1_420px] rounded-md border border-accent bg-surface px-2.5 font-mono text-xs outline-none"
             />
           ) : (
@@ -351,6 +359,12 @@ export function TableDataTab({ tab }: { tab: Tab }) {
             <TableProperties size={14} aria-hidden="true" />
             {t("data.recordView")}
           </button>
+          {toDelete.length > 0 && (
+            <Button variant="ghost" title={t("data.deleteSelectedHint")} onClick={deleteSelected} className="px-2">
+              <Trash2 size={14} aria-hidden="true" />
+              {t("data.deleteSelected", { n: toDelete.length })}
+            </Button>
+          )}
           <Button disabled={!canEdit} onClick={() => dispatch({ type: "add", tempId: `new-${seq.current++}`, values: {} })}>
             <Plus size={14} aria-hidden="true" />
             {t("data.row")}
@@ -390,12 +404,15 @@ export function TableDataTab({ tab }: { tab: Tab }) {
         <div
           hidden={recordView}
           onScroll={(e) => onScroll(e.currentTarget)}
+          onKeyDown={(e) => {
+            if ((e.key === "Delete" || e.key === "Backspace") && !(e.target as HTMLElement).closest("input, textarea, select")) deleteSelected();
+          }}
           className="min-h-0 flex-1 overflow-auto text-[12.5px] select-text"
         >
           <table
             aria-label={table}
-            style={colWidths.tableWidth ? { width: colWidths.tableWidth + 64 } : undefined}
-            className={cn("table-fixed border-collapse", !colWidths.tableWidth && "w-full min-w-[860px]", status === "loading" && "opacity-60")}
+            style={{ width: colWidths.tableWidth + 64 }}
+            className={cn("table-fixed border-collapse", status === "loading" && "opacity-60")}
           >
             <colgroup>
               <col style={{ width: 64 }} />

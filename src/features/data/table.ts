@@ -36,6 +36,11 @@ export function nextSort(current: OrderBy | null, column: string): OrderBy | nul
   return current.desc ? null : { column, desc: true };
 }
 
+/** macOS smart quotes (‘ ’ “ ”) typed into a SQL text field, turned back into ASCII quotes. */
+export function straightQuotes(sql: string): string {
+  return sql.replace(/[‘’]/g, "'").replace(/[“”]/g, '"');
+}
+
 /** A cell as a SQL literal for the driver (strings quoted, MySQL backslashes escaped). */
 export function sqlLiteral(driver: Driver, v: Cell): string {
   if (v === null) return "NULL";

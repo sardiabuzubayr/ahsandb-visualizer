@@ -5,6 +5,7 @@ export type PendingAction =
   | { type: "edit"; key: string; column: string; from: Cell; to: Cell }
   | { type: "add"; tempId: string; values: Record<string, Cell> }
   | { type: "delete"; key: string }
+  | { type: "deleteRows"; keys: string[] }
   | { type: "discard" };
 
 export function pendingReducer(list: PendingChange[], a: PendingAction): PendingChange[] {
@@ -30,6 +31,12 @@ export function pendingReducer(list: PendingChange[], a: PendingAction): Pending
         return list.filter((c) => !(c.kind === "delete" && c.rowKey === a.key));
       return [...list, { kind: "delete", rowKey: a.key }];
     }
+    case "deleteRows":
+      // Marks every row for deletion (no toggling back); new rows just disappear.
+      return a.keys.reduce(
+        (l, key) => (l.some((c) => c.kind === "delete" && c.rowKey === key) ? l : pendingReducer(l, { type: "delete", key })),
+        list,
+      );
     case "discard":
       return [];
   }

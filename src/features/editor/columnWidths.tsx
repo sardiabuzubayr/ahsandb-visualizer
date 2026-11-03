@@ -1,11 +1,44 @@
-// Resizable grid columns: drag the right edge of a header, double-click it to go back to automatic.
-// Widths are kept per grid (key) in localStorage, so they survive closing the tab or the app.
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import type { Column } from "../../types";
+// Resizable grid columns: each starts fitted to its header and values; drag the right edge of a header
+// to set it, double-click to go back to fitted. Set widths are kept per grid (key) in localStorage.
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import type { Cell, Column } from "../../types";
+import { formatCell } from "./format";
 
 const MIN = 48;
-/** Width a column without a set or typed width gets once the grid switches to fixed widths. */
 const AUTO = 180;
+const FIT_MIN = 64;
+/** Longer values stay truncated (full text in the cell's tooltip / record view). */
+const FIT_MAX = 360;
+/** Cell padding (px-3 both sides) plus a little air. */
+const PAD = 28;
+const SAMPLE = 100;
+
+export type TextKind = "head" | "cell" | "mono" | "small";
+export type Measure = (text: string, kind: TextKind) => number;
+
+/** Width that shows each column's header and its first SAMPLE values whole, within FIT_MIN..FIT_MAX. */
+export function fitWidths(columns: Column[], rows: Cell[][], measure: Measure, headExtra: (c: Column, m: Measure) => number = () => 0): Widths {
+  const sample = rows.slice(0, SAMPLE);
+  return Object.fromEntries(
+    columns.map((c, j) => {
+      let w = measure(c.name, "head") + headExtra(c, measure);
+      for (const r of sample) if (r[j] !== undefined) w = Math.max(w, measure(formatCell(r[j], c.numeric), c.numeric ? "mono" : "cell"));
+      return [c.name, Math.round(Math.min(FIT_MAX, Math.max(FIT_MIN, w + PAD)))];
+    }),
+  );
+}
+
+let ctx: CanvasRenderingContext2D | null | undefined;
+/** Text width in the grid's fonts (canvas); a rough per-character guess where canvas is missing. */
+const measureText: Measure = (text, kind) => {
+  if (ctx === undefined) ctx = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
+  if (!ctx) return text.length * 7.5;
+  const css = getComputedStyle(document.documentElement);
+  const sans = css.getPropertyValue("--font-sans") || "sans-serif";
+  const mono = css.getPropertyValue("--font-mono") || "monospace";
+  ctx.font = { head: `500 12px ${sans}`, cell: `12.5px ${sans}`, mono: `12.5px ${mono}`, small: `10.5px ${mono}` }[kind];
+  return ctx.measureText(text).width;
+};
 
 type Widths = Record<string, number>;
 
@@ -32,7 +65,8 @@ function save(key: string | null, w: Widths) {
 /** Storage key for a grid; `parts` identify it (e.g. connection + table, or the result's column names). */
 export const gridKey = (...parts: string[]) => `grid.widths:${parts.join("\u001f")}`;
 
-export function useColumnWidths(key: string | null, columns: Column[], autoWidth: (c: Column) => number | undefined) {
+/** `headExtra` = header room besides the name (key badge, type label, sort arrow). */
+export function useColumnWidths(key: string | null, columns: Column[], rows: Cell[][], headExtra?: (c: Column, m: Measure) => number) {
   const [widths, setWidths] = useState<Widths>(() => load(key));
   const loaded = useRef(key);
   useEffect(() => {
@@ -41,11 +75,13 @@ export function useColumnWidths(key: string | null, columns: Column[], autoWidth
     setWidths(load(key));
   }, [key]);
 
-  // Once any column was sized by hand every column gets a fixed width and the table its total width
-  // (horizontal scroll), so dragging one column never squeezes the others.
-  const fixed = columns.some((c) => widths[c.name] !== undefined);
-  const widthOf = (c: Column) => widths[c.name] ?? (fixed ? (autoWidth(c) ?? AUTO) : autoWidth(c));
-  const tableWidth = fixed ? columns.reduce((sum, c) => sum + (widthOf(c) ?? AUTO), 0) : undefined;
+  // Fitted once per column set and first page (loading more rows doesn't make columns jump).
+  const first = rows.slice(0, SAMPLE);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const fit = useMemo(() => fitWidths(columns, first, measureText, headExtra), [columns.map((c) => `${c.name}:${c.type}:${c.pk}:${c.fk}`).join("\u001f"), first.length, rows[0]]);
+  // Every column has a fixed width and the table their total (horizontal scroll, at least the grid's width).
+  const widthOf = (c: Column) => widths[c.name] ?? fit[c.name] ?? AUTO;
+  const tableWidth = columns.reduce((sum, c) => sum + widthOf(c), 0);
 
   const startResize = (name: string, e: ReactPointerEvent<HTMLElement>) => {
     e.preventDefault();

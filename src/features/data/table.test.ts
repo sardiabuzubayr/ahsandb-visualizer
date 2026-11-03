@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from "vitest";
-import { nextSort, splitTarget, followForeignKey, selectRows, sqlLiteral } from "./table";
+import { nextSort, splitTarget, followForeignKey, selectRows, sqlLiteral, straightQuotes } from "./table";
 
 test("nextSort cycles asc → desc → none and restarts on another column", () => {
   const asc = nextSort(null, "total");
@@ -49,4 +49,9 @@ test("selectRows: click selects one, ⌘ toggles, Shift selects a range from the
   expect([...selectRows(keys, toggled, 2, 0, { shift: false, toggle: true })]).toEqual(["c"]);
   expect([...selectRows(keys, new Set(["d"]), 3, 1, { shift: true, toggle: false })]).toEqual(["b", "c", "d"]);
   expect([...selectRows(keys, new Set(), null, 1, { shift: true, toggle: false })]).toEqual(["b"]);
+});
+
+test("straightQuotes undoes macOS smart quotes in a filter", () => {
+  expect(straightQuotes("username = ‘ops'")).toBe("username = 'ops'");
+  expect(straightQuotes("name = ‘a’ and “x” > 1")).toBe(`name = 'a' and "x" > 1`);
 });

@@ -3,24 +3,19 @@ import type { Column, ResultSet } from "../../types";
 import { cn } from "../../components/ui";
 import { formatCell } from "./format";
 import { visibleRange } from "./results";
-import { ResizeHandle, gridKey, useColumnWidths } from "./columnWidths";
+import { ResizeHandle, gridKey, useColumnWidths, type Measure } from "./columnWidths";
 import { useT } from "../../i18n";
 
 const ROW_H = 28;
 
-/** Fixed widths for numbers and timestamps; text columns share the rest. */
-export function colWidth(c: Column): number | undefined {
-  if (/timestamp|date|time/i.test(c.type)) return 170;
-  if (c.fk) return 124;
-  if (!c.numeric) return undefined;
-  return /numeric|decimal|float|double|real|money/i.test(c.type) ? 170 : 104;
-}
+/** Header room besides the name: the type label. */
+const headRoom = (c: Column, m: Measure) => m(c.type, "small") + 8;
 
 export function ResultGrid({ result, label }: { result: ResultSet; label: string }) {
   const t = useT();
   const [selected, setSelected] = useState<number | null>(null);
   // Widths follow the column set, so re-running the same query keeps them.
-  const cols = useColumnWidths(gridKey("result", ...result.columns.map((c) => c.name)), result.columns, colWidth);
+  const cols = useColumnWidths(gridKey("result", ...result.columns.map((c) => c.name)), result.columns, result.rows, headRoom);
   const box = useRef<HTMLDivElement>(null);
   const [scroll, setScroll] = useState({ top: 0, height: 600 });
   useEffect(() => {
@@ -39,8 +34,8 @@ export function ResultGrid({ result, label }: { result: ResultSet; label: string
     >
       <table
         aria-label={label}
-        style={cols.tableWidth ? { width: cols.tableWidth + 52 } : undefined}
-        className={cn("table-fixed border-collapse", !cols.tableWidth && "w-full min-w-[640px]")}
+        style={{ width: cols.tableWidth + 52 }}
+        className="table-fixed border-collapse"
       >
         <colgroup>
           <col style={{ width: 52 }} />
