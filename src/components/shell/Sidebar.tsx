@@ -258,6 +258,9 @@ export function Sidebar() {
     const transfer = transferDialog(a, n, active.driver);
     if (transfer) return dispatch({ type: "openDialog", connectionId: active.id, ...transfer });
     const database = tabDatabase(active.driver, n);
+    // MySQL/MariaDB databases are the node's schema; a SQL tab on one gets its own pool there.
+    if (a === "newQuery")
+      return dispatch({ type: "openTab", kind: "sql", connectionId: active.id, title: "untitled.sql", database: database ?? (active.driver === "sqlite" ? undefined : n.schema) });
     if (a === "newSql") {
       queueSql(active.id, selectSql(active.driver, n.label, n.schema));
       return dispatch({ type: "openTab", kind: "sql", connectionId: active.id, title: "untitled.sql", database });

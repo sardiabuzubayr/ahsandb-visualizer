@@ -39,6 +39,7 @@ export const objectSchema = (n: SchemaNode): string | undefined => erSchemaOf(n)
 export type NodeAction =
   | "openData"
   | "newSql"
+  | "newQuery"
   | "copyName"
   | "openEr"
   | "openDictionary"
@@ -81,7 +82,9 @@ export function nodeActions(n: SchemaNode, driver?: Driver): NodeAction[] {
       return ["openData", "editView", "newSql", "copyName", "openEr", "dropView"];
     case "schema":
     case "database":
-      return erSchemaOf(n) ? ["openEr", "openDictionary", "newTable", "newView", "export", "importSql", "refresh"] : ["export", "importSql", "refresh"];
+      return erSchemaOf(n)
+        ? ["newQuery", "openEr", "openDictionary", "newTable", "newView", "export", "importSql", "refresh"]
+        : ["newQuery", "export", "importSql", "refresh"];
     case "group":
       return n.id.endsWith("/triggers") ? ["newTrigger", "refresh"] : ["refresh"];
     case "trigger":

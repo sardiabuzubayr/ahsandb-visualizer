@@ -77,8 +77,10 @@ export function SqlEditorTab({ tab }: { tab: Tab }) {
   const sid = scopedId(conn.id, database);
   const { state: app, dispatch } = useApp();
   const tree = app.trees[conn.id];
-  const databases = conn.driver === "postgres" && tree?.status === "ready" ? databaseNames(tree.nodes) : [];
-  const baseDatabase = firstDatabase(conn.database) ?? "postgres";
+  const pickable = conn.driver === "postgres" || conn.driver === "mysql" || conn.driver === "mariadb";
+  const databases = pickable && tree?.status === "ready" ? databaseNames(tree.nodes) : [];
+  // MySQL/MariaDB may have no default database: the picker then starts empty.
+  const current = database ?? firstDatabase(conn.database) ?? (conn.driver === "postgres" ? "postgres" : "");
 
   const loadHistory = () => void api.history(conn.id, 20).then(setHistory, () => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -256,16 +258,17 @@ export function SqlEditorTab({ tab }: { tab: Tab }) {
             }
           />
           <span className="flex-1" />
-          {databases.length > 1 ? (
+          {databases.length > 1 || (databases.length > 0 && !current) ? (
             <Select
               compact
               mono
               aria-label={t("editor.databasePick")}
               title={t("editor.databasePick")}
-              value={database ?? baseDatabase}
+              value={current}
               onChange={(e) => dispatch({ type: "setTabDatabase", id: tab.id, database: e.target.value })}
               className="w-44"
             >
+              {!current && <option value="">{t("editor.noDatabase")}</option>}
               {databases.map((d) => (
                 <option key={d}>{d}</option>
               ))}

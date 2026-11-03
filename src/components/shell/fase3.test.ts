@@ -77,10 +77,10 @@ describe("navigator context menu", () => {
   test("items per node kind", () => {
     expect(nodeActions(node("table"))).toEqual(["openData", "newSql", "copyName", "openEr", "openDictionary", "editTable", "newTrigger", "exportData", "importData", "dropTable"]);
     expect(nodeActions(node("view"))).toEqual(["openData", "editView", "newSql", "copyName", "openEr", "dropView"]);
-    expect(nodeActions(node("schema"))).toEqual(["openEr", "openDictionary", "newTable", "newView", "export", "importSql", "refresh"]);
+    expect(nodeActions(node("schema"))).toEqual(["newQuery", "openEr", "openDictionary", "newTable", "newView", "export", "importSql", "refresh"]);
     // PostgreSQL's database node holds schemas (no ER of its own); MySQL/SQLite database nodes are the schema.
-    expect(nodeActions(node("database"))).toEqual(["export", "importSql", "refresh"]);
-    expect(nodeActions(node("database", { schema: "shop" }))).toEqual(["openEr", "openDictionary", "newTable", "newView", "export", "importSql", "refresh"]);
+    expect(nodeActions(node("database"))).toEqual(["newQuery", "export", "importSql", "refresh"]);
+    expect(nodeActions(node("database", { schema: "shop" }))).toEqual(["newQuery", "openEr", "openDictionary", "newTable", "newView", "export", "importSql", "refresh"]);
     expect(nodeActions(node("group"))).toEqual(["refresh"]);
     expect(nodeActions(node("function"))).toEqual(["open", "copyName"]);
     expect(nodeActions(node("procedure"))).toEqual(["open", "copyName"]);
