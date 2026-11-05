@@ -17,6 +17,7 @@ import {
   objectSchema,
   redisDb,
   redisTab,
+  searchScope,
   selectSql,
   tabDatabase,
   tableTarget,
@@ -116,9 +117,21 @@ export function Sidebar() {
 
   const active = state.connections.find((c) => c.id === state.activeConnectionId);
   const treeState = active?.connected ? state.trees[active.id] : undefined;
-  const tree = useMemo(() => (treeState?.status === "ready" ? filterTree(treeState.nodes, query) : []), [treeState, query]);
+  const defaultDb = active?.defaultDatabase;
+  const isDefaultDb = (n: SchemaNode) => n.kind === "database" && !!defaultDb && n.label === defaultDb;
   // Several databases: nothing starts open, so connecting doesn't load (or show) every one of them.
   const multiDb = treeState?.status === "ready" && isMultiDb(treeState.nodes);
+  /** Open in the navigator, regardless of a search. */
+  const expanded = (n: SchemaNode) => open.has(n.id) || ((isDefaultDb(n) || (!multiDb && DEFAULT_OPEN(n))) && !closed.has(n.id));
+  // With several databases, a search looks in the expanded ones and the default (all when none is);
+  // one still loading stays as is, with its spinner.
+  const all = treeState?.status === "ready" ? treeState.nodes : [];
+  const scope = query && multiDb ? searchScope(all, expanded) : all;
+  const tree = useMemo(
+    () => (scope === all ? filterTree(all, query) : scope.flatMap((n) => (n.lazy ? [n] : filterTree([n], query)))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [treeState, query, defaultDb, open, closed],
+  );
 
   // Dictionary marks follow the active connection's tree and every dictionary change.
   const markConn = active?.connected && active.driver !== "redis" && treeState?.status === "ready" ? active.id : null;
@@ -166,13 +179,15 @@ export function Sidebar() {
       () => {},
     );
   }, [treeState]); // a refreshed tree means fresh numbers
-  const isOpen = (n: SchemaNode) => !!query || open.has(n.id) || (!multiDb && DEFAULT_OPEN(n) && !closed.has(n.id));
+  const isOpen = (n: SchemaNode) => !!query || expanded(n);
 
-  // An open lazy database without a load in flight or a past error loads (expand, or open again after a refresh).
+  // An open lazy database without a load in flight or a past error loads (expand, or open again after a refresh);
+  // the default database starts open, and is the one a search needs.
   useEffect(() => {
-    if (!active || query || treeState?.status !== "ready") return;
-    for (const n of treeState.nodes) if (n.lazy && open.has(n.id) && !dbStatus(n.id)) void loadDatabase(active.id, n);
-  }, [treeState, open, query]); // dbStatus/loadDatabase read fresh each run
+    if (!active || treeState?.status !== "ready") return;
+    for (const n of treeState.nodes)
+      if (n.lazy && !dbStatus(n.id) && (query ? scope.includes(n) : expanded(n))) void loadDatabase(active.id, n);
+  }, [treeState, open, closed, query, defaultDb]); // dbStatus/loadDatabase read fresh each run
   const toggle = (n: SchemaNode) => {
     const nowOpen = isOpen(n);
     setOpen((s) => {
@@ -252,6 +267,13 @@ export function Sidebar() {
         () => toast(t("nav.ctx.copied", { name: n.label })),
         (e: unknown) => toast(errorText(e)),
       );
+    if (a === "setDefaultDatabase" || a === "clearDefaultDatabase") {
+      const defaultDatabase = a === "setDefaultDatabase" ? n.label : undefined;
+      return void api.saveConnection({ ...active, defaultDatabase }, {}).then(
+        (c) => (dispatch({ type: "addConnection", connection: c }), toast(defaultDatabase ? t("nav.defaultSaved", { name: n.label }) : t("nav.defaultCleared"))),
+        (e: unknown) => toast(errorText(e)),
+      );
+    }
     if (a === "newDatabase") return setDbDialog({ conn: active });
     if (a === "renameDatabase") return setDbDialog({ conn: active, from: n.label });
     if (a === "dropDatabase") return setDroppingDb({ conn: active, node: n });
@@ -322,7 +344,7 @@ export function Sidebar() {
               openMenu(
                 e,
                 nodeLabel(n),
-                nodeActions(n, active?.driver).map((a) => {
+                nodeActions(n, active?.driver, defaultDb).map((a) => {
                   const noRename = a === "renameDatabase" && !!active && !canRenameDatabase(active.driver);
                   return {
                     key: a,
@@ -352,7 +374,14 @@ export function Sidebar() {
               <span className="w-[11px] shrink-0" />
             )}
             <span className={cn("min-w-4 font-mono text-[10px]", badge?.color)}>{badge?.text}</span>
-            <span className="flex-1 truncate">{nodeLabel(n)}</span>
+            <span className="flex-1 truncate">
+              {nodeLabel(n)}
+              {isDefaultDb(n) && (
+                <span title={t("nav.defaultDatabase")} className="ml-1.5 rounded-[3px] border border-accent px-[3px] font-mono text-[9.5px] text-accent">
+                  default
+                </span>
+              )}
+            </span>
             {n.count !== undefined && <span className="font-mono text-[11px] text-faint">{n.count}</span>}
             {n.kind === "table" && active && marks.has(markKey(dictDatabase(active.driver, n), n.schema, n.label)) && (
               <BookOpen

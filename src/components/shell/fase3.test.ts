@@ -4,7 +4,7 @@ import type { HostKeyInfo, SchemaNode } from "../../types";
 import { clampMenu, stepIndex } from "../ui/ContextMenu";
 import { isConnectionError } from "./connectionError";
 import { hostKeyStep, withHostKey } from "./hostKey";
-import { nodeActions, quoteIdent, selectSql } from "./tree";
+import { nodeActions, quoteIdent, searchScope, selectSql } from "./tree";
 
 const key: HostKeyInfo = { host: "bastion", port: 22, algorithm: "ssh-ed25519", fingerprint: "SHA256:abc", key: "ssh-ed25519 AAAA" };
 const unknown = new ApiError("hostKeyUnknown", "Unknown host key", undefined, key);
@@ -81,6 +81,9 @@ describe("navigator context menu", () => {
     // PostgreSQL's database node holds schemas (no ER of its own); MySQL/SQLite database nodes are the schema.
     expect(nodeActions(node("database"))).toEqual(["newQuery", "export", "importSql", "refresh"]);
     expect(nodeActions(node("database", { schema: "shop" }))).toEqual(["newQuery", "openEr", "openDictionary", "newTable", "newView", "export", "importSql", "refresh"]);
+    expect(nodeActions(node("database", { label: "shop" }), "mysql").slice(0, 2)).toEqual(["newQuery", "setDefaultDatabase"]);
+    expect(nodeActions(node("database", { label: "shop" }), "mysql", "shop").slice(0, 2)).toEqual(["newQuery", "clearDefaultDatabase"]);
+    expect(nodeActions(node("database", { label: "main" }), "sqlite", "main")).not.toContain("clearDefaultDatabase");
     expect(nodeActions(node("group"))).toEqual(["refresh"]);
     expect(nodeActions(node("function"))).toEqual(["open", "copyName"]);
     expect(nodeActions(node("procedure"))).toEqual(["open", "copyName"]);
@@ -110,4 +113,14 @@ describe("navigator context menu", () => {
     expect(stepIndex(enabled, 1, -1)).toBe(2);
     expect(stepIndex([false, false], -1, 1)).toBe(-1);
   });
+});
+
+test("searchScope narrows a search to the kept (expanded / default) databases, else searches all", () => {
+  const nodes: SchemaNode[] = [
+    { id: "a", label: "audio", kind: "database" },
+    { id: "e", label: "eoffice", kind: "database" },
+    { id: "l", label: "elibrary", kind: "database" },
+  ];
+  expect(searchScope(nodes, (n) => n.id !== "a")).toEqual([nodes[1], nodes[2]]);
+  expect(searchScope(nodes, () => false)).toBe(nodes);
 });

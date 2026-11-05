@@ -120,7 +120,9 @@ export function reducer(s: AppState, a: Action): AppState {
             t.kind === a.kind && t.connectionId === a.connectionId && t.target === a.target && t.database === a.database && t.filter === a.filter,
         );
       if (existing) return { ...s, activeTabId: existing.id, activeConnectionId: a.connectionId };
-      const tab: Tab = { id: newId(a.kind), kind: a.kind, title: a.title, connectionId: a.connectionId, target: a.target, database: a.database, filePath: a.filePath, filter: a.filter };
+      // A new SQL editor without a database of its own runs in the connection's default database.
+      const database = a.database ?? (a.kind === "sql" ? conn.defaultDatabase : undefined);
+      const tab: Tab = { id: newId(a.kind), kind: a.kind, title: a.title, connectionId: a.connectionId, target: a.target, database, filePath: a.filePath, filter: a.filter };
       return { ...s, tabs: [...s.tabs, tab], activeTabId: tab.id, activeConnectionId: a.connectionId };
     }
     case "focusTab": {

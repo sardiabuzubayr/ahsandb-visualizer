@@ -40,6 +40,8 @@ export interface Connection {
   sslCaPath?: string;
   sslCertPath?: string;
   sslKeyPath?: string;
+  /** Database the navigator searches in and new SQL tabs open on (multi-database servers). */
+  defaultDatabase?: string;
 }
 
 /** An SSH server's host key shown for trust (hostKeyUnknown) or as a warning (hostKeyMismatch). */

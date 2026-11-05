@@ -111,7 +111,7 @@ export function ConnectionDialog() {
     setSaving(true);
     setSaveError(null);
     try {
-      const saved = await api.saveConnection(toConnection(f, editing?.id ?? ""), secretsOf(f));
+      const saved = await api.saveConnection({ ...toConnection(f, editing?.id ?? ""), defaultDatabase: editing?.defaultDatabase }, secretsOf(f));
       dispatch({ type: "addConnection", connection: saved }); // closes the dialog
       void connect(saved.id);
     } catch (e) {

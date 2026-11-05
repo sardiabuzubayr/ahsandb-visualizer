@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { initialState } from "./app";
-import { reducer } from "./reducer";
+import { reducer, type AppState } from "./reducer";
 
 const base = { ...initialState, tabs: initialState.tabs.map((t) => ({ ...t, dirty: false })) };
 
@@ -111,4 +111,12 @@ test("a SQL tab on a Redis connection opens its console instead (once per databa
   expect(tab).toMatchObject({ kind: "console", connectionId: "cache", database: "2", target: "db2" });
   const s2 = reducer(s1, { type: "openTab", kind: "sql", connectionId: "cache", title: "untitled.sql" });
   expect(s2.tabs).toHaveLength(s1.tabs.length);
+});
+
+test("a new SQL editor opens on the connection's default database unless given one", () => {
+  const s0 = { ...base, connections: base.connections.map((c) => (c.id === "orders-prod" ? { ...c, defaultDatabase: "analytics" } : c)) };
+  const tabOf = (s: AppState) => s.tabs.find((t) => t.id === s.activeTabId)!;
+  expect(tabOf(reducer(s0, { type: "openTab", kind: "sql", connectionId: "orders-prod", title: "q.sql" })).database).toBe("analytics");
+  expect(tabOf(reducer(s0, { type: "openTab", kind: "sql", connectionId: "orders-prod", title: "q.sql", database: "shop" })).database).toBe("shop");
+  expect(tabOf(reducer(s0, { type: "openTab", kind: "table", connectionId: "orders-prod", title: "t", target: "t" })).database).toBeUndefined();
 });

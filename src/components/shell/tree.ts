@@ -14,6 +14,12 @@ export function filterTree(nodes: SchemaNode[], query: string): SchemaNode[] {
   return out;
 }
 
+/** Database nodes a search looks in: those `inScope` keeps (expanded, default), or all nodes when none is. */
+export function searchScope(nodes: SchemaNode[], inScope: (n: SchemaNode) => boolean): SchemaNode[] {
+  const dbs = nodes.filter((n) => n.kind === "database" && inScope(n));
+  return dbs.length ? dbs : nodes;
+}
+
 /** Tab `database` for an object opened from `n`: PostgreSQL (not for cluster-wide Roles), or a Redis keyspace's index. */
 export const tabDatabase = (driver: Driver, n: SchemaNode) =>
   driver === "redis" ? n.schema : driver === "postgres" && n.kind !== "role" ? nodeDatabase(n) : undefined;
@@ -40,6 +46,8 @@ export type NodeAction =
   | "openData"
   | "newSql"
   | "newQuery"
+  | "setDefaultDatabase"
+  | "clearDefaultDatabase"
   | "copyName"
   | "openEr"
   | "openDictionary"
@@ -72,9 +80,14 @@ export const isServerDriver = (d?: Driver) => !!d && d !== "sqlite" && d !== "re
 /** MySQL/MariaDB have no RENAME DATABASE: the menu entry stays, disabled with a tooltip. */
 export const canRenameDatabase = (d: Driver) => d !== "mysql" && d !== "mariadb";
 
-/** Right-click menu entries per navigator node; empty = no menu. `driver` adds database DDL to database nodes. */
-export function nodeActions(n: SchemaNode, driver?: Driver): NodeAction[] {
-  if (n.kind === "database" && isServerDriver(driver)) return [...nodeActions(n), "newDatabase", "renameDatabase", "dropDatabase"];
+/** Right-click menu entries per navigator node; empty = no menu. `driver` adds the default-database toggle
+ * (`defaultDb` = the connection's current one) and database DDL to database nodes. */
+export function nodeActions(n: SchemaNode, driver?: Driver, defaultDb?: string): NodeAction[] {
+  if (n.kind === "database" && isServerDriver(driver)) {
+    const [first, ...rest] = nodeActions(n);
+    const toggle: NodeAction = n.label === defaultDb ? "clearDefaultDatabase" : "setDefaultDatabase";
+    return [first, toggle, ...rest, "newDatabase", "renameDatabase", "dropDatabase"];
+  }
   switch (n.kind) {
     case "table":
       return ["openData", "newSql", "copyName", "openEr", "openDictionary", "editTable", "newTrigger", "exportData", "importData", "dropTable"];
