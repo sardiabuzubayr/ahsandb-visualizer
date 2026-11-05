@@ -420,6 +420,7 @@ mod tests {
             ssl_ca_path: None,
             ssl_cert_path: None,
             ssl_key_path: None,
+            default_database: None,
         }
     }
 

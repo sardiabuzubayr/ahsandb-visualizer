@@ -115,6 +115,9 @@ pub struct Connection {
     pub ssl_cert_path: Option<String>,
     #[serde(default)]
     pub ssl_key_path: Option<String>,
+    /// Database the navigator searches in and new SQL tabs open on (multi-database servers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_database: Option<String>,
 }
 
 impl Connection {
