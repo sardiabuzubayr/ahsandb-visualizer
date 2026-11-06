@@ -236,7 +236,7 @@ pub struct SchemaNode {
     pub size: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Column {
     pub name: String,
@@ -252,6 +252,19 @@ pub struct Column {
     /// Allowed values of an enum column (PostgreSQL enum types, MySQL/MariaDB `ENUM`), in declared order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enum_values: Vec<String>,
+    /// Table column a query result column reads straight from (PostgreSQL only); lets the editor delete rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ColumnOrigin>,
+    /// PostgreSQL (table oid, attnum) behind `origin`, resolved after the run.
+    #[serde(skip)]
+    pub relation: Option<(u32, i16)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ColumnOrigin {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
 }
 
 /// A cell: JSON null, number (integers within ±2^53 and floats) or string (everything else,

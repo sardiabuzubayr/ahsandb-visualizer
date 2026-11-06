@@ -172,3 +172,14 @@ async fn dictionary_reads_comments() {
     assert_eq!(got, [("bills".into(), "".into(), "One bill per month".into()), ("bills".into(), "status".into(), "1 = active, 2 = waived".into())]);
     assert_eq!(Some(db), c.database);
 }
+
+#[tokio::test]
+async fn result_columns_know_their_table() {
+    let Some(c) = pg() else { return };
+    let (mgr, pool) = open(&c).await;
+    let res = exec(&mgr, &pool, &c, "SELECT o.id AS order_id, o.total + 1, cu.name FROM orders o JOIN customers cu ON cu.id = o.customer_id LIMIT 1")
+        .await
+        .unwrap();
+    let origins: Vec<_> = res[0].columns.iter().map(|c| c.origin.as_ref().map(|o| (o.schema.as_str(), o.table.as_str(), o.column.as_str()))).collect();
+    assert_eq!(origins, [Some(("public", "orders", "id")), None, Some(("public", "customers", "name"))]);
+}

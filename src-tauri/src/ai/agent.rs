@@ -894,7 +894,7 @@ impl Run<'_> {
             Ok(r) => {
                 let rows: Vec<Vec<crate::model::Cell>> = r.text.lines().take(tools::UI_ROWS as usize).map(|l| vec![l.into()]).collect();
                 let truncated = r.text.lines().count() > rows.len();
-                let reply = Column { name: "reply".into(), type_name: "text".into(), numeric: false, pk: false, fk: false, enum_values: vec![] };
+                let reply = Column { name: "reply".into(), type_name: "text".into(), numeric: false, pk: false, fk: false, enum_values: vec![], ..Default::default() };
                 self.put(AgentMessage::Result { id: new_id(), sql: line.into(), columns: vec![reply], rows, truncated, elapsed_ms: r.elapsed_ms });
                 self.audit(RiskLevel::Read, line, "auto", if r.error { &r.text } else { "ok" }).await;
                 if r.error { err(format!("The command failed: {}", r.text)) } else { ok(kv_tools::reply_text(&r.text)) }

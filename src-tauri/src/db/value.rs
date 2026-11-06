@@ -4,7 +4,7 @@
 //! arrives as the server's own text, which keeps decimals exact and timestamps with their zone.
 use serde_json::{Number, Value};
 use sqlx::mysql::{MySql, MySqlQueryResult, MySqlRow};
-use sqlx::postgres::{PgQueryResult, PgRow, PgValueFormat, Postgres};
+use sqlx::postgres::{PgColumn, PgQueryResult, PgRow, PgValueFormat, Postgres};
 use sqlx::sqlite::{Sqlite, SqliteQueryResult, SqliteRow};
 use sqlx::{Column as _, Decode, Row, TypeInfo, ValueRef};
 
@@ -80,11 +80,13 @@ impl Dialect for Sqlite {
     }
 }
 
-pub(crate) fn columns<C: sqlx::Column>(cols: &[C]) -> Vec<Column> {
+pub(crate) fn columns<C: sqlx::Column + 'static>(cols: &[C]) -> Vec<Column> {
     cols.iter()
         .map(|c| {
             let type_name = c.type_info().name().to_lowercase();
-            Column { name: c.name().to_string(), numeric: is_numeric(&type_name), type_name, pk: false, fk: false, enum_values: vec![] }
+            let pg = (c as &dyn std::any::Any).downcast_ref::<PgColumn>();
+            let relation = pg.and_then(|p| Some((p.relation_id()?.0, p.relation_attribute_no()?)));
+            Column { name: c.name().to_string(), numeric: is_numeric(&type_name), type_name, relation, ..Default::default() }
         })
         .collect()
 }

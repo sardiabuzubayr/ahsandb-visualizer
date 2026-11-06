@@ -118,6 +118,14 @@ export interface Column {
   fk?: boolean;
   /** Allowed values of an enum column, in declared order. */
   enumValues?: string[];
+  /** Table column a query result column reads straight from (PostgreSQL only). */
+  origin?: ColumnOrigin;
+}
+
+export interface ColumnOrigin {
+  schema: string;
+  table: string;
+  column: string;
 }
 
 export type Cell = string | number | null;

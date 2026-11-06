@@ -10,7 +10,7 @@ use sqlx::{Either, Executor, Row};
 use super::value::{Dialect, columns};
 use super::{Manager, Pool, Running};
 use crate::error::{AppError, AppResult};
-use crate::model::{Connection, Env, StatementError, StatementResult};
+use crate::model::{ColumnOrigin, Connection, Env, StatementError, StatementResult};
 use crate::sql::classify::{StatementClass, classify};
 use crate::sql::split::split;
 
@@ -48,7 +48,9 @@ pub async fn execute(
             let mut c = p.acquire().await?;
             let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *c).await?;
             register(Some(pid.into())).await;
-            run_all::<Postgres>(&mut *c, &stmts, max_rows).await
+            let mut results = run_all::<Postgres>(&mut *c, &stmts, max_rows).await;
+            pg_origins(&mut c, &mut results).await;
+            results
         }
         Pool::My(p) => {
             let mut c = p.acquire().await?;
@@ -124,6 +126,35 @@ where
         }
     }
     out
+}
+
+/// Fills `origin` on result columns that read a table column. Best effort: if the lookup fails the
+/// columns just have none (the editor then can't delete rows from that result).
+async fn pg_origins(c: &mut sqlx::PgConnection, results: &mut [StatementResult]) {
+    let mut oids: Vec<i64> = results.iter().flat_map(|r| &r.columns).filter_map(|c| Some(c.relation?.0.into())).collect();
+    oids.sort_unstable();
+    oids.dedup();
+    if oids.is_empty() {
+        return;
+    }
+    let Ok(attrs) = sqlx::query_as::<_, (i64, i16, String, String, String)>(
+        "SELECT a.attrelid::int8, a.attnum, n.nspname::text, c.relname::text, a.attname::text
+         FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE a.attrelid::int8 = ANY($1) AND a.attnum > 0",
+    )
+    .bind(&oids)
+    .fetch_all(&mut *c)
+    .await
+    else {
+        return;
+    };
+    for col in results.iter_mut().flat_map(|r| &mut r.columns) {
+        let Some((oid, att)) = col.relation else { continue };
+        col.origin = attrs
+            .iter()
+            .find(|a| a.0 == i64::from(oid) && a.1 == att)
+            .map(|a| ColumnOrigin { schema: a.2.clone(), table: a.3.clone(), column: a.4.clone() });
+    }
 }
 
 fn statement_error(e: &sqlx::Error) -> StatementError {

@@ -271,7 +271,7 @@ pub async fn table_columns(pool: &Pool, schema: &str, table: &str) -> AppResult<
         .into_iter()
         .map(|r| {
             let type_name = r[2].to_lowercase();
-            Column { name: r[1].clone(), numeric: is_numeric(&type_name), type_name, pk: r[3] == "1", fk: r[4] == "1", enum_values: enum_values(&r[5]) }
+            Column { name: r[1].clone(), numeric: is_numeric(&type_name), type_name, pk: r[3] == "1", fk: r[4] == "1", enum_values: enum_values(&r[5]), ..Default::default() }
         })
         .collect())
 }
