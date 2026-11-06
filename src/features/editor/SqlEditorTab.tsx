@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { AlignLeft, FolderOpen, History, Lock, Play, Save, Square, TriangleAlert } from "lucide-react";
 import { useT } from "../../i18n";
 import { api, isApiError } from "../../lib/api";
@@ -20,6 +20,11 @@ import { loadSql, saveSql } from "../../lib/session";
 import { fileName, pickSqlToSave } from "../../lib/sqlFile";
 import { useOpenSqlFile } from "./useOpenSqlFile";
 import { databaseNames, firstDatabase } from "./treeScope";
+import { writePref } from "../../lib/storage";
+
+const EDITOR_DEFAULT = 304;
+/** Editor height between 80px and leaving the results ~130px. */
+const clampEditor = (h: number) => Math.round(Math.max(80, Math.min(h, window.innerHeight - 320)));
 
 
 const firstLine = (sql: string) => sql.trim().split("\n")[0];
@@ -70,6 +75,29 @@ export function SqlEditorTab({ tab }: { tab: Tab }) {
   const [confirm, setConfirm] = useState<{ sql: string; statements: string[] } | null>(null);
   const [view, setView] = useState<ResultView>("grid");
   const [showEditor, setShowEditor] = useState(false);
+  const [editorH, setEditorH] = useState(() => {
+    try {
+      return clampEditor(Number(localStorage.getItem("editor.height")) || EDITOR_DEFAULT);
+    } catch {
+      return EDITOR_DEFAULT;
+    }
+  });
+  // Drag the line between query and results; double-click for the default height.
+  const startResize = (e: ReactPointerEvent<HTMLElement>) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    let latest = editorH;
+    const move = (ev: PointerEvent) => setEditorH((latest = clampEditor(editorH + ev.clientY - startY)));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.style.cursor = "";
+      writePref("editor.height", String(latest));
+    };
+    document.body.style.cursor = "row-resize";
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [schema, setSchema] = useState<Record<string, string[]>>();
   const running = runId !== null;
@@ -286,7 +314,7 @@ export function SqlEditorTab({ tab }: { tab: Tab }) {
           )}
         </div>
       )}
-      <div className={compact ? "hidden" : "h-[304px] shrink-0"}>
+      <div className={compact ? "hidden" : "shrink-0"} style={{ height: editorH }}>
         <CodeEditor
           value={sql}
           onChange={setSql}
@@ -302,6 +330,17 @@ export function SqlEditorTab({ tab }: { tab: Tab }) {
           onFormat={format}
         />
       </div>
+      {!compact && (
+        <span
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label={t("editor.resize")}
+          title={t("editor.resize")}
+          onPointerDown={startResize}
+          onDoubleClick={() => (setEditorH(EDITOR_DEFAULT), writePref("editor.height", String(EDITOR_DEFAULT)))}
+          className="relative z-10 -mb-1.5 h-1.5 shrink-0 cursor-row-resize hover:bg-[var(--accent-ring)]"
+        />
+      )}
       <ResultsPanel
         key={results?.[0]?.id ?? "none"}
         results={results}
@@ -309,6 +348,7 @@ export function SqlEditorTab({ tab }: { tab: Tab }) {
         running={running}
         view={view}
         onLoadMore={loadMore}
+        source={{ conn, sid, database: current || undefined }}
         onView={(v) => {
           setView(v);
           setShowEditor(false);
@@ -347,4 +387,3 @@ export function SqlEditorTab({ tab }: { tab: Tab }) {
     </>
   );
 }
-        source={{ conn, sid, database: current || undefined }}
