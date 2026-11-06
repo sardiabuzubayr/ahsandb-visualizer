@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useReducer, useRef, useState, type MouseEvent } from "react";
 import { ArrowDown, ArrowUp, ArrowUpRight, Download, ListFilter, Plus, RotateCcw, RotateCw, TableProperties, Trash2, X } from "lucide-react";
 import { useT } from "../../i18n";
 import { api, isApiError } from "../../lib/api";
@@ -11,6 +11,7 @@ import { useConnectionError } from "../../components/shell/connectionError";
 import { scopedId } from "../../lib/scope";
 import { firstDatabase } from "../editor/treeScope";
 import { PendingChangesPanel } from "./PendingChangesPanel";
+import { KeyBadge, RecordView } from "./RecordView";
 import { pendingReducer, rowKeyOf } from "./pending";
 import { followForeignKey, nextSort, selectRows, splitTarget, straightQuotes } from "./table";
 
@@ -20,20 +21,6 @@ const errText = (e: unknown) => (isApiError(e) ? e.message : String(e));
 
 const parse = (text: string, prev: Cell, col: Column): Cell =>
   (typeof prev === "number" || (prev === null && col.numeric)) && /^-?\d+$/.test(text) ? Number(text) : text;
-
-function KeyBadge({ col }: { col: Column }) {
-  if (!col.pk && !col.fk) return null;
-  return (
-    <span
-      className={cn(
-        "mr-0.5 shrink-0 rounded-[3px] border px-[3px] font-mono text-[9.5px] leading-[13px] font-normal",
-        col.pk ? "border-stg text-stg" : "border-dev text-dev",
-      )}
-    >
-      {col.pk ? "PK" : "FK"}
-    </span>
-  );
-}
 
 /** Header room besides the name: the PK/FK badge and the sort arrow. */
 const headRoom = (c: Column) => (c.pk || c.fk ? 30 : 0) + 16;
@@ -523,70 +510,6 @@ export function TableDataTab({ tab }: { tab: Tab }) {
           }}
         />
       )}
-    </div>
-  );
-}
-
-/** Selected rows turned sideways: one line per column, one value column per row (like DBeaver's record mode). */
-function RecordView({
-  table,
-  columns,
-  records,
-  isDeleted,
-  renderCell,
-}: {
-  table: string;
-  columns: Column[];
-  records: { row: Cell[]; i: number; key: string }[];
-  isDeleted: (key: string) => boolean;
-  renderCell: (key: string, col: Column, j: number, row: Cell[]) => ReactNode;
-}) {
-  const t = useT();
-  if (records.length === 0) return <p className="m-0 flex-1 py-10 text-center text-muted">{t("data.recordViewEmpty")}</p>;
-  return (
-    <div className="min-h-0 flex-1 overflow-auto text-[12.5px] select-text">
-      <table
-        aria-label={t("data.recordViewOf", { table })}
-        style={{ width: 240 + records.length * 280 }}
-        className="table-fixed border-collapse min-w-full"
-      >
-        <colgroup>
-          <col style={{ width: 240 }} />
-          {records.map((r) => (
-            <col key={r.key} />
-          ))}
-        </colgroup>
-        <thead className="sticky top-0 z-[2] bg-panel text-xs">
-          <tr className="h-8 shadow-[inset_0_-1px_0_var(--border-strong)]">
-            <th scope="col" className="sticky left-0 z-[1] bg-panel px-3 text-left font-normal text-faint">
-              {t("data.column")}
-            </th>
-            {records.map((r) => (
-              <th
-                key={r.key}
-                scope="col"
-                className={cn("px-3 text-left font-mono font-normal", isDeleted(r.key) ? "text-prod line-through" : "text-faint")}
-              >
-                #{r.i + 1}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {columns.map((c, j) => (
-            <tr key={c.name} className="h-[29px] border-b border-border hover:bg-surface">
-              <th scope="row" title={`${c.name} · ${c.type}`} className="sticky left-0 bg-panel px-3 text-left font-medium">
-                <span className="flex items-center gap-1">
-                  <KeyBadge col={c} />
-                  <span className="truncate">{c.name}</span>
-                  <span className="ml-auto shrink-0 pl-2 font-mono text-[11px] font-normal text-faint">{c.type}</span>
-                </span>
-              </th>
-              {records.map((r) => renderCell(r.key, c, j, r.row))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }

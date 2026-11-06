@@ -17,8 +17,8 @@ const revenueRows: Cell[][] = [
 ];
 
 export const revenueColumns: Column[] = [
-  { name: "id", type: "int8", numeric: true },
-  { name: "name", type: "text" },
+  { name: "id", type: "int8", numeric: true, origin: { schema: "public", table: "customers", column: "id" } },
+  { name: "name", type: "text", origin: { schema: "public", table: "customers", column: "name" } },
   { name: "orders", type: "int8", numeric: true },
   { name: "revenue", type: "numeric", numeric: true },
 ];

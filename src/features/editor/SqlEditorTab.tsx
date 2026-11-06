@@ -347,3 +347,4 @@ export function SqlEditorTab({ tab }: { tab: Tab }) {
     </>
   );
 }
+        source={{ conn, sid, database: current || undefined }}

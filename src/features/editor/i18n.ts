@@ -45,6 +45,9 @@ const en = {
   "results.view": "Result view",
   "results.grid": "Grid",
   "results.chart": "Chart",
+  "editor.resize": "Resize the query editor (drag; double-click for default height)",
+  "results.selected": "{n} rows selected",
+  "results.deleteFrom": "Delete {n} from {table}",
   "results.export": "Export",
 };
 
@@ -95,6 +98,9 @@ const id: typeof en = {
   "results.view": "Tampilan hasil",
   "results.grid": "Grid",
   "results.chart": "Grafik",
+  "editor.resize": "Ubah tinggi editor query (geser; klik dua kali untuk tinggi awal)",
+  "results.selected": "{n} baris dipilih",
+  "results.deleteFrom": "Hapus {n} dari {table}",
   "results.export": "Ekspor",
 };
 

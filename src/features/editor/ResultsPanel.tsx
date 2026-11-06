@@ -1,16 +1,16 @@
 import { Suspense, lazy, useState, type ReactNode } from "react";
-import { ChartColumn, CircleAlert, Download, LoaderCircle, Table2 } from "lucide-react";
+import { ChartColumn, CircleAlert, Download, LoaderCircle, Table2, TableProperties } from "lucide-react";
 import { useT } from "../../i18n";
 import { getEditorPrefs } from "../../lib/editorPrefs";
 import { useApp } from "../../state/app";
 import { Loading, Segmented, cn } from "../../components/ui";
-import { ResultGrid } from "./ResultGrid";
+import { ResultGrid, type ResultSource } from "./ResultGrid";
 import type { RunResult } from "./results";
 
 // ECharts is heavy: load the chart only when it is first shown.
 const ChartView = lazy(() => import("../chart/ChartView").then((m) => ({ default: m.ChartView })));
 
-export type ResultView = "grid" | "chart";
+export type ResultView = "grid" | "record" | "chart";
 
 /** A run that failed before producing results (not connected, blocked on read-only, …). */
 export interface RunError {
@@ -40,6 +40,7 @@ export function ResultsPanel({
   view,
   onView,
   onLoadMore,
+  source,
 }: {
   results: RunResult[] | null;
   error?: RunError | null;
@@ -48,6 +49,8 @@ export function ResultsPanel({
   onView: (v: ResultView) => void;
   /** Fetch the next batch of rows for a truncated result (re-runs that read statement). */
   onLoadMore?: (result: RunResult) => Promise<void>;
+  /** The SQL tab's connection: lets rows be deleted from a result that holds a table's primary key. */
+  source?: ResultSource;
 }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const t = useT();
@@ -94,10 +97,11 @@ export function ResultsPanel({
           onChange={onView}
           options={[
             { value: "grid", label: <><Table2 size={13} aria-hidden="true" />{t("results.grid")}</> },
+            { value: "record", label: <><TableProperties size={13} aria-hidden="true" />{t("data.recordView")}</> },
             { value: "chart", label: <><ChartColumn size={13} aria-hidden="true" />{t("results.chart")}</> },
           ]}
         />
-        {view === "grid" && (
+        {view !== "chart" && (
           <button
             type="button"
             // The panel lives in the active tab: its connection and database scope the re-run export.
@@ -159,7 +163,13 @@ export function ResultsPanel({
               <ChartView key={result.id} result={result} />
             </Suspense>
           ) : (
-            <ResultGrid key={result.id} result={result} label={t("results.tab", { n: results!.indexOf(result) + 1 })} />
+            <ResultGrid
+              key={result.id}
+              result={result}
+              record={view === "record"}
+              source={source}
+              label={t("results.tab", { n: results!.indexOf(result) + 1 })}
+            />
           )}
         </>
       )}
