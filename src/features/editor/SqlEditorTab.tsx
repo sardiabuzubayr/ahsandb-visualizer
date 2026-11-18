@@ -4,7 +4,7 @@ import { useT } from "../../i18n";
 import { api, isApiError } from "../../lib/api";
 import { useApp, useConnection, useTabDirty, useToast } from "../../state/app";
 import type { HistoryEntry, Tab } from "../../types";
-import { Button, Dialog, Kbd, Menu, cn } from "../../components/ui";
+import { Button, Dialog, DialogHeader, Field, Input, Kbd, Menu, cn } from "../../components/ui";
 import { Select } from "../../components/ui/Select";
 import { scopedId } from "../../lib/scope";
 import { useConnectionError } from "../../components/shell/connectionError";
@@ -13,6 +13,7 @@ import { dropQueuedSql, peekQueuedSql } from "./pendingSql";
 import { ResultsPanel, type ResultView, type RunError } from "./ResultsPanel";
 import { toResultSets, type RunResult } from "./results";
 import { statementAt } from "./statementAt";
+import { bindParams, paramNames } from "./params";
 import { formatInEditor } from "./formatSql";
 import { getEditorPrefs } from "../../lib/editorPrefs";
 import type { EditorView } from "codemirror";
@@ -73,6 +74,9 @@ export function SqlEditorTab({ tab }: { tab: Tab }) {
   const [runError, setRunError] = useState<RunError | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<{ sql: string; statements: string[] } | null>(null);
+  // `:name` placeholders waiting for values; values are remembered for the next run in this tab.
+  const [params, setParams] = useState<{ sql: string; names: string[] } | null>(null);
+  const [paramValues, setParamValues] = useState<Record<string, string>>({});
   const [view, setView] = useState<ResultView>("grid");
   const [showEditor, setShowEditor] = useState(false);
   const [editorH, setEditorH] = useState(() => {
@@ -147,7 +151,9 @@ export function SqlEditorTab({ tab }: { tab: Tab }) {
   const run = (script = false) => {
     if (!canRun) return;
     const text = script ? sql : selection.trim() ? selection : (statementAt(sql, cursor.current, conn.driver) ?? sql);
-    void exec(text, false);
+    const names = paramNames(text, conn.driver);
+    if (names.length) setParams({ sql: text, names });
+    else void exec(text, false);
   };
   // "Load more": the same read statement again with room for one more page; replaces that result in place.
   const loadMore = async (r: RunResult) => {
@@ -354,6 +360,39 @@ export function SqlEditorTab({ tab }: { tab: Tab }) {
           setShowEditor(false);
         }}
       />
+      <Dialog open={!!params} onClose={() => setParams(null)} labelledBy={`${tab.id}-params`} className="top-[20%] max-w-[440px]">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const text = bindParams(params!.sql, paramValues, conn.driver);
+            setParams(null);
+            void exec(text, false);
+          }}
+        >
+          <DialogHeader id={`${tab.id}-params`} title={t("editor.params.title")} onClose={() => setParams(null)} />
+          <div className="flex max-h-[50vh] flex-col gap-3 overflow-auto px-5 pt-4 pb-1">
+            <p className="m-0 text-xs text-muted">{t("editor.params.body")}</p>
+            {params?.names.map((n) => (
+              <Field key={n} label={<span className="font-mono">:{n}</span>}>
+                <Input
+                  mono
+                  required
+                  value={paramValues[n] ?? ""}
+                  onChange={(e) => setParamValues((v) => ({ ...v, [n]: e.target.value }))}
+                />
+              </Field>
+            ))}
+          </div>
+          <div className="flex justify-end gap-2 px-5 py-3.5">
+            <Button type="button" variant="outline" size="lg" onClick={() => setParams(null)}>
+              {t("common.cancel")}
+            </Button>
+            <Button type="submit" variant="primary" size="lg">
+              {t("editor.run")}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
       <Dialog open={!!confirm} onClose={() => setConfirm(null)} labelledBy={`${tab.id}-confirm`} className="top-[20%] max-w-[560px] border-prod!">
         <div className="flex items-center gap-2 bg-prod-bg px-5 py-3.5 text-prod">
           <TriangleAlert size={16} aria-hidden="true" />

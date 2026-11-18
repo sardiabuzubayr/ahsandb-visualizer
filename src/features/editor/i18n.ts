@@ -49,6 +49,8 @@ const en = {
   "results.selected": "{n} rows selected",
   "results.deleteFrom": "Delete {n} from {table}",
   "results.export": "Export",
+  "editor.params.title": "Query parameters",
+  "editor.params.body": "Values go into the query as typed. Quote text yourself, e.g. 'abc'.",
 };
 
 const id: typeof en = {
@@ -102,6 +104,8 @@ const id: typeof en = {
   "results.selected": "{n} baris dipilih",
   "results.deleteFrom": "Hapus {n} dari {table}",
   "results.export": "Ekspor",
+  "editor.params.title": "Parameter query",
+  "editor.params.body": "Nilai dimasukkan ke query apa adanya. Beri kutip untuk teks, mis. 'abc'.",
 };
 
 export default { en, id };

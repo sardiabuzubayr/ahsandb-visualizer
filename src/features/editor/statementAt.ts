@@ -44,13 +44,13 @@ export function statementAt(sql: string, offset: number, driver: Driver): string
   return sql.slice(hit[0], hit[1]).trim();
 }
 
-const lineEnd = (s: string, i: number) => {
+export const lineEnd = (s: string, i: number) => {
   const n = s.indexOf("\n", i);
   return n < 0 ? s.length : n + 1;
 };
 
 /** Index after the closing quote; doubled quotes (and backslash escapes on MySQL) stay inside. */
-function quoteEnd(s: string, i: number, q: string, backslash: boolean): number {
+export function quoteEnd(s: string, i: number, q: string, backslash: boolean): number {
   for (let j = i + 1; j < s.length; j++) {
     if (backslash && s[j] === "\\") j++;
     else if (s[j] === q) {
