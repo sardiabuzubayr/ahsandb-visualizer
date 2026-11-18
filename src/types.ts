@@ -216,6 +216,8 @@ export interface Tab {
   filePath?: string;
   /** Table tabs: initial WHERE filter (e.g. from following a foreign key). */
   filter?: string;
+  /** Tab this one was opened from by following a foreign key: Back and closing return to it. */
+  from?: string;
   dirty?: boolean;
 }
 

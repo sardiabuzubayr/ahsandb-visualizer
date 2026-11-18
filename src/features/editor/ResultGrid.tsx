@@ -146,7 +146,7 @@ export function ResultGrid({
     const f = fkCols[j];
     const to = f && source && followForeignKey(source.conn.driver, f.fk, f.schema, f.columns, row);
     if (to)
-      app.dispatch({ type: "openTab", kind: "table", connectionId: source.conn.id, title: to.table, target: to.target, database: source.database, filter: to.filter });
+      app.dispatch({ type: "openTab", kind: "table", connectionId: source.conn.id, title: to.table, target: to.target, database: source.database, filter: to.filter, from: app.state.activeTabId ?? undefined });
   };
   /** `values` set = a pending insert's cell (absent = column default). */
   const valueCell = (

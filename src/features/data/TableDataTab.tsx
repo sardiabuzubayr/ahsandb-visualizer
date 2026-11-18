@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState, type MouseEvent } from "react";
-import { ArrowDown, ArrowUp, ArrowUpRight, Download, ListFilter, Plus, RotateCcw, RotateCw, TableProperties, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpRight, Download, ListFilter, Plus, RotateCcw, RotateCw, TableProperties, Trash2, X } from "lucide-react";
 import { useT } from "../../i18n";
 import { api, isApiError } from "../../lib/api";
 import { useApp, useConnection, useTabDirty, useToast } from "../../state/app";
@@ -118,8 +118,10 @@ export function TableDataTab({ tab }: { tab: Tab }) {
   const fkOf = (column: string) => fks.find((f) => f.columns.includes(column));
   const openReferenced = (fk: ForeignKeyDef, row: Cell[]) => {
     const to = followForeignKey(conn.driver, fk, schema, page.columns.map((c) => c.name), row);
-    if (to) app.dispatch({ type: "openTab", kind: "table", connectionId: conn.id, title: to.table, target: to.target, database: tab.database, filter: to.filter });
+    if (to)
+      app.dispatch({ type: "openTab", kind: "table", connectionId: conn.id, title: to.table, target: to.target, database: tab.database, filter: to.filter, from: tab.id });
   };
+  const back = tab.from ? app.state.tabs.find((x) => x.id === tab.from) : undefined;
   const toDelete = canEdit ? [...selected].filter((k) => !deleted.has(k)) : [];
   const deleteSelected = () => toDelete.length && dispatch({ type: "deleteRows", keys: toDelete });
 
@@ -213,6 +215,15 @@ export function TableDataTab({ tab }: { tab: Tab }) {
     <div className="flex min-h-0 flex-1">
       <div className="flex min-w-0 flex-[999_1_560px] flex-col">
         <div className="flex min-h-[46px] shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+          {back && (
+            <>
+              <Button variant="ghost" title={t("data.backHint", { title: back.title })} onClick={() => app.dispatch({ type: "focusTab", id: back.id })} className="px-2">
+                <ArrowLeft size={14} aria-hidden="true" />
+                {t("data.back")}
+              </Button>
+              <span aria-hidden="true" className="h-5 w-px bg-border" />
+            </>
+          )}
           <span className="flex items-center gap-1.5 text-[12.5px] text-faint">
             {db && (
               <>

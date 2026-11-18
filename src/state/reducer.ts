@@ -48,7 +48,7 @@ export interface AppState {
 }
 
 export type Action =
-  | { type: "openTab"; kind: TabKind; connectionId: string; title: string; target?: string; database?: string; filePath?: string; filter?: string }
+  | { type: "openTab"; kind: TabKind; connectionId: string; title: string; target?: string; database?: string; filePath?: string; filter?: string; from?: string }
   /** A SQL tab was saved to a (new) file. */
   | { type: "setTabFile"; id: string; filePath: string; title: string }
   | { type: "focusTab"; id: string }
@@ -86,10 +86,12 @@ function closeTabs(s: AppState, ids: string[], force?: boolean): AppState {
   if (!drop.size) return s;
   if (!force && s.tabs.some((t) => drop.has(t.id) && t.dirty)) return { ...s, confirmCloseIds: [...drop] };
   const tabs = s.tabs.filter((t) => !drop.has(t.id));
-  // Keep the active tab; if it closed, take the nearest remaining tab to its right, else to its left.
+  // Keep the active tab; if it closed, go back to the tab it was opened from, else the nearest remaining
+  // tab to its right, else to its left.
   const at = s.tabs.findIndex((t) => t.id === s.activeTabId);
   const next =
     tabs.find((t) => t.id === s.activeTabId) ??
+    tabs.find((t) => t.id === s.tabs[at]?.from) ??
     s.tabs.slice(at + 1).find((t) => !drop.has(t.id)) ??
     s.tabs.slice(0, Math.max(at, 0)).reverse().find((t) => !drop.has(t.id)) ??
     null;
@@ -119,10 +121,13 @@ export function reducer(s: AppState, a: Action): AppState {
           (t) =>
             t.kind === a.kind && t.connectionId === a.connectionId && t.target === a.target && t.database === a.database && t.filter === a.filter,
         );
-      if (existing) return { ...s, activeTabId: existing.id, activeConnectionId: a.connectionId };
+      if (existing) {
+        const tabs = a.from ? s.tabs.map((t) => (t === existing ? { ...t, from: a.from } : t)) : s.tabs;
+        return { ...s, tabs, activeTabId: existing.id, activeConnectionId: a.connectionId };
+      }
       // A new SQL editor without a database of its own runs in the connection's default database.
       const database = a.database ?? (a.kind === "sql" ? conn.defaultDatabase : undefined);
-      const tab: Tab = { id: newId(a.kind), kind: a.kind, title: a.title, connectionId: a.connectionId, target: a.target, database, filePath: a.filePath, filter: a.filter };
+      const tab: Tab = { id: newId(a.kind), kind: a.kind, title: a.title, connectionId: a.connectionId, target: a.target, database, filePath: a.filePath, filter: a.filter, from: a.from };
       return { ...s, tabs: [...s.tabs, tab], activeTabId: tab.id, activeConnectionId: a.connectionId };
     }
     case "focusTab": {

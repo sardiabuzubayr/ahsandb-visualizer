@@ -120,3 +120,12 @@ test("a new SQL editor opens on the connection's default database unless given o
   expect(tabOf(reducer(s0, { type: "openTab", kind: "sql", connectionId: "orders-prod", title: "q.sql", database: "shop" })).database).toBe("shop");
   expect(tabOf(reducer(s0, { type: "openTab", kind: "table", connectionId: "orders-prod", title: "t", target: "t" })).database).toBeUndefined();
 });
+
+test("a tab opened from a foreign key returns to its origin when closed", () => {
+  // A SQL tab sits between the origin (t-orders) and the new tab, so the left/right fallback would pick it.
+  const sql = reducer(base, { type: "openTab", kind: "sql", connectionId: "orders-prod", title: "q.sql" });
+  const opened = reducer(sql, { type: "openTab", kind: "table", connectionId: "orders-prod", title: "c", target: "customers", filter: "id = 1", from: "t-orders" });
+  expect(opened.tabs.at(-1)!.from).toBe("t-orders");
+  const closed = reducer(opened, { type: "closeTab", id: opened.activeTabId! });
+  expect(closed.activeTabId).toBe("t-orders");
+});
