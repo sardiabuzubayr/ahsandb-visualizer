@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Column } from "../../types";
-import { columnSources, deleteTarget, sourceTables } from "./resultSource";
+import { columnSources, editTarget, sourceTables } from "./resultSource";
 
 const col = (name: string, extra: Partial<Column> = {}): Column => ({ name, type: "text", ...extra });
 
@@ -31,7 +31,7 @@ describe("columnSources", () => {
   });
 });
 
-describe("deleteTarget", () => {
+describe("editTarget", () => {
   const t = { schema: "public", table: "transaction" };
   const td = { schema: "public", table: "transaction_details" };
   const sources = [
@@ -47,11 +47,19 @@ describe("deleteTarget", () => {
       { ...td, columns: [col("detail_id", { pk: true }), col("transaction_id")] },
       { ...t, columns: [col("transaction_id", { pk: true }), col("payment_status")] },
     ];
-    expect(deleteTarget(sources, tables)).toEqual({ ...t, keyIdxs: [2], keyNames: ["transaction_id"] });
+    expect(editTarget(sources, tables)).toEqual({
+      ...t,
+      keyIdxs: [2],
+      keyNames: ["transaction_id"],
+      tableCols: [tables[1].columns[1], undefined, tables[1].columns[0], undefined],
+      complete: true,
+    });
+    expect(editTarget(sources, [{ ...t, columns: [...tables[1].columns, col("note")] }])?.complete).toBe(false);
   });
 
   it("needs every key column and a primary key at all", () => {
-    expect(deleteTarget(sources, [{ ...t, columns: [col("transaction_id", { pk: true }), col("seq", { pk: true })] }])).toBeNull();
-    expect(deleteTarget(sources, [{ ...t, columns: [col("transaction_id")] }])).toBeNull();
+    expect(editTarget(sources, [{ ...t, columns: [col("transaction_id", { pk: true }), col("seq", { pk: true })] }])).toBeNull();
+    expect(editTarget(sources, [{ ...t, columns: [col("transaction_id")] }])).toBeNull();
   });
 });
+

@@ -155,18 +155,20 @@ export function SqlEditorTab({ tab }: { tab: Tab }) {
     if (names.length) setParams({ sql: text, names });
     else void exec(text, false);
   };
-  // "Load more": the same read statement again with room for one more page; replaces that result in place.
-  const loadMore = async (r: RunResult) => {
+  // The same read statement again with room for `maxRows`; replaces that result in place.
+  const reload = async (r: RunResult, maxRows: number) => {
     if (!r.sql) return;
     const runId = `more-${Date.now().toString(36)}`;
     try {
-      const next = await api.fetchMore(sid, r.sql, runId, r.rows.length + getEditorPrefs().pageSize);
+      const next = await api.fetchMore(sid, r.sql, runId, maxRows);
       setResults((rs) => rs && rs.map((x) => (x.id === r.id ? { ...toResultSets([next], runId)[0], id: x.id, label: x.label } : x)));
     } catch (e) {
       markLost(conn.id, e);
       toast(isApiError(e) ? e.message : String(e));
     }
   };
+  const loadMore = (r: RunResult) => reload(r, r.rows.length + getEditorPrefs().pageSize);
+  const refresh = (r: RunResult) => reload(r, Math.max(r.rows.length, getEditorPrefs().pageSize));
   const cancel = () => {
     if (runId) api.cancel(runId).catch((e) => toast(isApiError(e) ? e.message : String(e)));
   };
@@ -354,6 +356,7 @@ export function SqlEditorTab({ tab }: { tab: Tab }) {
         running={running}
         view={view}
         onLoadMore={loadMore}
+        onRefresh={refresh}
         source={{ conn, sid, database: current || undefined }}
         onView={(v) => {
           setView(v);

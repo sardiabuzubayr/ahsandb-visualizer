@@ -11,6 +11,7 @@ import { useConnectionError } from "../../components/shell/connectionError";
 import { scopedId } from "../../lib/scope";
 import { firstDatabase } from "../editor/treeScope";
 import { PendingChangesPanel } from "./PendingChangesPanel";
+import { CellEditor, parseCell } from "./CellEditor";
 import { KeyBadge, RecordView } from "./RecordView";
 import { pendingReducer, rowKeyOf } from "./pending";
 import { followForeignKey, nextSort, selectRows, splitTarget, straightQuotes } from "./table";
@@ -18,9 +19,6 @@ import { followForeignKey, nextSort, selectRows, splitTarget, straightQuotes } f
 const PAGE = 200;
 const isBinary = (c: Column) => /bytea|blob|binary/i.test(c.type);
 const errText = (e: unknown) => (isApiError(e) ? e.message : String(e));
-
-const parse = (text: string, prev: Cell, col: Column): Cell =>
-  (typeof prev === "number" || (prev === null && col.numeric)) && /^-?\d+$/.test(text) ? Number(text) : text;
 
 /** Header room besides the name: the PK/FK badge and the sort arrow. */
 const headRoom = (c: Column) => (c.pk || c.fk ? 30 : 0) + 16;
@@ -134,7 +132,7 @@ export function TableDataTab({ tab }: { tab: Tab }) {
   const commit = (key: string, col: Column, original: Cell, text: string, shown: string) => {
     setEditing(null);
     // Leaving the editor untouched is not an edit (keeps NULL as NULL and DEFAULT as DEFAULT).
-    if (text !== shown) dispatch({ type: "edit", key, column: col.name, from: original, to: parse(text, original, col) });
+    if (text !== shown) dispatch({ type: "edit", key, column: col.name, from: original, to: parseCell(text, original, col) });
   };
   const setNull = (key: string, col: Column, original: Cell) => {
     setEditing(null);
@@ -152,73 +150,18 @@ export function TableDataTab({ tab }: { tab: Tab }) {
     const isEdited = !opts.isNew && edited.has(`${key}/${col.name}`);
     const binary = isBinary(col);
     const editable = canEdit && !opts.isDeleted && !binary;
-    if (editing?.key === key && editing.col === col.name) {
-      const shown = value == null ? "" : String(value);
-      const nullButton = (
-        <button
-          type="button"
-          title={t("data.setNull")}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => setNull(key, col, original)}
-          onBlur={(e) => !e.currentTarget.parentElement?.contains(e.relatedTarget) && setEditing(null)}
-          className="absolute top-1/2 right-1 h-5 -translate-y-1/2 rounded border border-border-strong bg-panel px-1 font-mono text-[10px] text-muted hover:text-text focus-visible:text-text"
-        >
-          NULL
-        </button>
-      );
-      if (col.enumValues?.length)
-        return (
-          <td key={col.name} className="relative p-0">
-            <select
-              autoFocus
-              aria-label={col.name}
-              defaultValue={shown}
-              onFocus={(e) => {
-                try {
-                  e.currentTarget.showPicker();
-                } catch {
-                  // Older WebKit: the list opens on click or Space instead.
-                }
-              }}
-              onChange={(e) => commit(key, col, original, e.currentTarget.value, shown)}
-              onBlur={(e) => !e.currentTarget.parentElement?.contains(e.relatedTarget) && setEditing(null)}
-              onKeyDown={(e) => e.key === "Escape" && setEditing(null)}
-              className="h-7 w-full border-0 bg-surface pr-12 pl-3 text-text shadow-[inset_0_0_0_1.5px_var(--accent)] outline-none"
-            >
-              {!col.enumValues.includes(shown) && <option value={shown} disabled hidden />}
-              {col.enumValues.map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
-            {nullButton}
-          </td>
-        );
+    if (editing?.key === key && editing.col === col.name)
       return (
-        <td key={col.name} className="relative p-0">
-          <input
-            autoFocus
-            aria-label={col.name}
-            defaultValue={shown}
-            onBlur={(e) => {
-              if (e.currentTarget.parentElement?.contains(e.relatedTarget)) return; // moving to the NULL button
-              if (e.currentTarget.dataset.cancel) setEditing(null);
-              else commit(key, col, original, e.currentTarget.value, shown);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") e.currentTarget.dataset.cancel = "1";
-              if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
-            }}
-            className={cn(
-              "h-7 w-full border-0 bg-surface pr-12 pl-3 text-text shadow-[inset_0_0_0_1.5px_var(--accent)] outline-none",
-              col.numeric && (opts.vertical ? "font-mono" : "text-right font-mono"),
-            )}
-          />
-          {nullButton}
-        </td>
+        <CellEditor
+          key={col.name}
+          col={col}
+          value={value}
+          vertical={opts.vertical}
+          onCommit={(text, shown) => commit(key, col, original, text, shown)}
+          onNull={() => setNull(key, col, original)}
+          onCancel={() => setEditing(null)}
+        />
       );
-    }
     const text = value === undefined ? "DEFAULT" : formatCell(value, col.numeric);
     const fk = !opts.isNew && value !== null && value !== undefined && opts.row ? fkOf(col.name) : undefined;
     return (

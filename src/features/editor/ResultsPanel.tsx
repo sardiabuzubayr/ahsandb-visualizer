@@ -40,6 +40,7 @@ export function ResultsPanel({
   view,
   onView,
   onLoadMore,
+  onRefresh,
   source,
 }: {
   results: RunResult[] | null;
@@ -49,6 +50,8 @@ export function ResultsPanel({
   onView: (v: ResultView) => void;
   /** Fetch the next batch of rows for a truncated result (re-runs that read statement). */
   onLoadMore?: (result: RunResult) => Promise<void>;
+  /** Re-run a result's statement in place (after its rows were changed). */
+  onRefresh?: (result: RunResult) => Promise<void>;
   /** The SQL tab's connection: lets rows be deleted from a result that holds a table's primary key. */
   source?: ResultSource;
 }) {
@@ -168,6 +171,7 @@ export function ResultsPanel({
               result={result}
               record={view === "record"}
               source={source}
+              onRefresh={onRefresh && result.sql ? () => onRefresh(result) : undefined}
               label={t("results.tab", { n: results!.indexOf(result) + 1 })}
             />
           )}

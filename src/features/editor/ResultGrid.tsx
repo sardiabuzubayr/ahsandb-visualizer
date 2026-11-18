@@ -1,17 +1,18 @@
 import { useEffect, useReducer, useRef, useState, type MouseEvent } from "react";
-import { RotateCcw, Trash2 } from "lucide-react";
+import { Copy, RotateCcw, Trash2 } from "lucide-react";
 import type { Cell, Column, Connection, ResultSet } from "../../types";
 import { Button, IconButton, cn } from "../../components/ui";
 import { formatCell } from "./format";
 import { visibleRange } from "./results";
 import { ResizeHandle, gridKey, useColumnWidths, type Measure } from "./columnWidths";
-import { columnSources, deleteTarget, sourceTables } from "./resultSource";
+import { columnSources, editTarget, sourceTables } from "./resultSource";
 import { api } from "../../lib/api";
 import { useToast } from "../../state/app";
 import { pendingReducer, rowKeyOf } from "../data/pending";
 import { defaultSchema, selectRows } from "../data/table";
 import { PendingChangesPanel } from "../data/PendingChangesPanel";
 import { RecordView } from "../data/RecordView";
+import { CellEditor, parseCell } from "../data/CellEditor";
 import { useT } from "../../i18n";
 
 const ROW_H = 28;
@@ -19,7 +20,9 @@ const ROW_H = 28;
 /** Header room besides the name: the type label. */
 const headRoom = (c: Column, m: Measure) => m(c.type, "small") + 8;
 
-/** Where a SQL tab's results come from, so rows can be deleted by primary key. */
+const isBinary = (c: Column) => /bytea|blob|binary/i.test(c.type);
+
+/** Where a SQL tab's results come from, so rows can be edited, duplicated and deleted by primary key. */
 export interface ResultSource {
   conn: Connection;
   /** IPC id of the tab (scopedId). */
@@ -28,9 +31,22 @@ export interface ResultSource {
   database?: string;
 }
 
-type Target = NonNullable<ReturnType<typeof deleteTarget>>;
+type Target = NonNullable<ReturnType<typeof editTarget>>;
 
-export function ResultGrid({ result, label, record, source }: { result: ResultSet & { sql?: string }; label: string; record?: boolean; source?: ResultSource }) {
+export function ResultGrid({
+  result,
+  label,
+  record,
+  source,
+  onRefresh,
+}: {
+  result: ResultSet & { sql?: string };
+  label: string;
+  record?: boolean;
+  source?: ResultSource;
+  /** Re-run the query after changes are applied. */
+  onRefresh?: () => Promise<void>;
+}) {
   const t = useT();
   const toast = useToast();
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -38,6 +54,9 @@ export function ResultGrid({ result, label, record, source }: { result: ResultSe
   const [target, setTarget] = useState<Target | null>(null);
   const [changes, dispatch] = useReducer(pendingReducer, []);
   const [gone, setGone] = useState<Set<string>>(new Set()); // keys of rows deleted from the database
+  useEffect(() => setGone(new Set()), [result.rows]); // fresh rows after a refresh
+  const [editing, setEditing] = useState<{ key: string; j: number } | null>(null);
+  const seq = useRef(1);
   // Widths follow the column set, so re-running the same query keeps them.
   const cols = useColumnWidths(gridKey("result", ...result.columns.map((c) => c.name)), result.columns, result.rows, headRoom);
   const box = useRef<HTMLDivElement>(null);
@@ -50,7 +69,7 @@ export function ResultGrid({ result, label, record, source }: { result: ResultSe
     return () => ro.disconnect();
   }, [record]);
 
-  // The table the rows can be deleted from: one whose whole primary key is in the result.
+  // The table the rows can be edited in: one whose whole primary key is in the result.
   const conn = source?.conn;
   useEffect(() => {
     if (!source || !conn?.connected) return;
@@ -58,7 +77,7 @@ export function ResultGrid({ result, label, record, source }: { result: ResultSe
     const sources = columnSources(result.columns, result.sql, schema);
     let live = true;
     Promise.all(sourceTables(sources).map(async (tb) => ({ ...tb, columns: await api.tableColumns(source.sid, tb.schema, tb.table).catch(() => []) })))
-      .then((tables) => live && setTarget(deleteTarget(sources, tables)));
+      .then((tables) => live && setTarget(editTarget(sources, tables)));
     return () => {
       live = false;
     };
@@ -71,16 +90,30 @@ export function ResultGrid({ result, label, record, source }: { result: ResultSe
   const pick = [...selected].map(Number).filter((i) => i < rows.length).sort((a, b) => a - b);
   const toDelete = target ? [...new Set(pick.map((i) => rowKey(rows[i], i)))].filter((k) => !deleted.has(k)) : [];
   const deleteSelected = () => toDelete.length && dispatch({ type: "deleteRows", keys: toDelete });
-  // The pending panel matches rows by the target's key columns, named as in the table.
-  const keyColumns = target
+  const edited = new Map<string, Cell>(changes.flatMap((c) => (c.kind === "update" ? [[`${c.rowKey}/${c.column}`, c.to] as const] : [])));
+  const inserts = changes.flatMap((c) => (c.kind === "insert" ? [c] : []));
+  // Copies of the selected rows as pending inserts. Key columns (often generated) and binary cells are left to
+  // their default; the user can still type them in the green row before applying.
+  const duplicateSelected = () => {
+    if (!target?.complete) return;
+    for (const i of pick) {
+      const values: Record<string, Cell> = {};
+      target.tableCols.forEach((tc, j) => {
+        if (tc && !target.keyIdxs.includes(j) && !isBinary(tc)) values[tc.name] = rows[i][j];
+      });
+      dispatch({ type: "add", tempId: `new-${seq.current++}`, values });
+    }
+  };
+  // The pending panel works in table column names; the key columns flag the row identity.
+  const editColumns = target
     ? result.columns.map((c, j) => {
-        const k = target.keyIdxs.indexOf(j);
-        return k < 0 ? { ...c, pk: false } : { ...c, name: target.keyNames[k], pk: true };
+        const tc = target.tableCols[j];
+        return { ...c, ...(tc && { name: tc.name, enumValues: tc.enumValues }), pk: target.keyIdxs.includes(j) };
       })
     : [];
 
   const onRowClick = (e: MouseEvent, i: number) => {
-    if ((e.target as HTMLElement).closest("button")) return;
+    if ((e.target as HTMLElement).closest("input, select, button")) return;
     const keys = rows.map((_, j) => String(j));
     setSelected((sel) => selectRows(keys, sel, anchor.current, i, { shift: e.shiftKey, toggle: e.metaKey || e.ctrlKey }));
     if (!e.shiftKey || anchor.current === null) anchor.current = i;
@@ -95,11 +128,52 @@ export function ResultGrid({ result, label, record, source }: { result: ResultSe
       {isDeleted ? <RotateCcw size={12} /> : <Trash2 size={12} />}
     </IconButton>
   );
-  const valueCell = (v: Cell, j: number, vertical = false) => {
-    const col = result.columns[j];
-    const text = formatCell(v, col?.numeric);
+  /** `values` set = a pending insert's cell (absent = column default). */
+  const valueCell = (
+    key: string,
+    j: number,
+    original: Cell,
+    opts: { isDeleted?: boolean; vertical?: boolean; values?: Record<string, Cell> } = {},
+  ) => {
+    const col = editColumns[j] ?? result.columns[j];
+    const tc = target?.tableCols[j];
+    const isNew = !!opts.values;
+    if (isNew && !tc) return <td key={j} />;
+    const editKey = tc && `${key}/${tc.name}`;
+    const isEdited = !isNew && !!editKey && edited.has(editKey);
+    const value: Cell | undefined = isNew ? opts.values![tc!.name] : isEdited ? edited.get(editKey!)! : original;
+    const editable = !!tc && !opts.isDeleted && !isBinary(tc);
+    if (editable && editing?.key === key && editing.j === j)
+      return (
+        <CellEditor
+          key={j}
+          col={col}
+          value={value}
+          vertical={opts.vertical}
+          onCommit={(text, shown) => {
+            setEditing(null);
+            // Leaving the editor untouched is not an edit (keeps NULL as NULL and DEFAULT as DEFAULT).
+            if (text !== shown) dispatch({ type: "edit", key, column: tc.name, from: original, to: parseCell(text, original, col) });
+          }}
+          onNull={() => (setEditing(null), dispatch({ type: "edit", key, column: tc.name, from: original, to: null }))}
+          onCancel={() => setEditing(null)}
+        />
+      );
+    const text = value === undefined ? "DEFAULT" : formatCell(value, col.numeric);
     return (
-      <td key={j} title={text} className={cn("truncate px-3", col?.numeric && (vertical ? "font-mono" : "text-right font-mono"), v === null && "text-faint italic")}>
+      <td
+        key={j}
+        title={text}
+        tabIndex={editable ? 0 : undefined}
+        onDoubleClick={() => editable && setEditing({ key, j })}
+        onKeyDown={(e) => editable && (e.key === "Enter" || e.key === "F2") && setEditing({ key, j })}
+        className={cn(
+          "truncate px-3",
+          col.numeric && (opts.vertical ? "font-mono" : "text-right font-mono"),
+          value === undefined ? "font-mono text-faint" : value === null && "text-faint italic",
+          isEdited && "bg-accent-bg shadow-[inset_0_0_0_1.5px_var(--accent)]",
+        )}
+      >
         {text}
       </td>
     );
@@ -110,18 +184,20 @@ export function ResultGrid({ result, label, record, source }: { result: ResultSe
   const grid = record ? (
     <RecordView
       table={target?.table ?? label}
-      columns={target ? keyColumns.map((c, j) => ({ ...c, name: result.columns[j].name })) : result.columns}
+      columns={target ? editColumns.map((c, j) => ({ ...c, name: result.columns[j].name })) : result.columns}
       // Selected rows, else the first one (a one-row result needs no click).
-      records={(pick.length ? pick : rows.length ? [0] : []).map((i) => ({ row: rows[i], i, key: String(i) }))}
-      isDeleted={(k) => deleted.has(rowKey(rows[Number(k)], Number(k)))}
-      renderCell={(_k, _c, j, row) => valueCell(row[j], j, true)}
+      records={(pick.length ? pick : rows.length ? [0] : []).map((i) => ({ row: rows[i], i, key: rowKey(rows[i], i) }))}
+      isDeleted={(k) => deleted.has(k)}
+      renderCell={(k, _c, j, row) => valueCell(k, j, row[j], { isDeleted: deleted.has(k), vertical: true })}
     />
   ) : (
     <div
       ref={box}
       tabIndex={-1}
       onScroll={(e) => setScroll({ top: e.currentTarget.scrollTop, height: e.currentTarget.clientHeight })}
-      onKeyDown={(e) => (e.key === "Delete" || e.key === "Backspace") && deleteSelected()}
+      onKeyDown={(e) => {
+        if ((e.key === "Delete" || e.key === "Backspace") && !(e.target as HTMLElement).closest("input, select")) deleteSelected();
+      }}
       className="min-h-0 flex-1 overflow-auto text-[12.5px] outline-none select-text"
     >
       <table aria-label={label} style={{ width: cols.tableWidth + 52 }} className="table-fixed border-collapse">
@@ -174,11 +250,19 @@ export function ResultGrid({ result, label, record, source }: { result: ResultSe
                 <td className={cn("px-2 text-right font-mono text-[11px]", isDeleted ? "text-prod" : "text-faint")}>
                   {target && rowButton(key, isDeleted)} {i + 1}
                 </td>
-                {row.map((v, j) => valueCell(v, j))}
+                {row.map((v, j) => valueCell(key, j, v, { isDeleted }))}
               </tr>
             );
           })}
           {end < rows.length && <tr aria-hidden="true" style={{ height: (rows.length - end) * ROW_H }} />}
+          {inserts.map((ins) => (
+            <tr key={ins.tempId} className="group h-7 bg-ok-bg shadow-[inset_0_-1px_0_var(--border)]">
+              <td className="px-2 text-right font-mono text-[11px] text-ok">
+                {rowButton(ins.tempId, false)} +
+              </td>
+              {result.columns.map((_, j) => valueCell(ins.tempId, j, null, { values: ins.values }))}
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
@@ -187,13 +271,21 @@ export function ResultGrid({ result, label, record, source }: { result: ResultSe
   return (
     <div className="flex min-h-0 flex-1">
       <div className="flex min-w-0 flex-[999_1_560px] flex-col">
-        {toDelete.length > 0 && (
+        {target && pick.length > 0 && (
           <p className="m-0 flex shrink-0 items-center gap-2 border-b border-border px-3 py-1 text-xs text-muted">
             <span className="flex-1">{t("results.selected", { n: pick.length })}</span>
-            <Button variant="ghost" title={t("data.deleteSelectedHint")} onClick={deleteSelected} className="h-6 px-2">
-              <Trash2 size={13} aria-hidden="true" />
-              {t("results.deleteFrom", { n: toDelete.length, table: target!.table })}
-            </Button>
+            {target.complete && (
+              <Button variant="ghost" title={t("results.duplicateHint")} onClick={duplicateSelected} className="h-6 px-2">
+                <Copy size={13} aria-hidden="true" />
+                {t("results.duplicate", { n: pick.length })}
+              </Button>
+            )}
+            {toDelete.length > 0 && (
+              <Button variant="ghost" title={t("data.deleteSelectedHint")} onClick={deleteSelected} className="h-6 px-2">
+                <Trash2 size={13} aria-hidden="true" />
+                {t("results.deleteFrom", { n: toDelete.length, table: target.table })}
+              </Button>
+            )}
           </p>
         )}
         {grid}
@@ -203,7 +295,7 @@ export function ResultGrid({ result, label, record, source }: { result: ResultSe
           changes={changes}
           schema={target.schema}
           table={target.table}
-          columns={keyColumns}
+          columns={editColumns}
           rows={rows}
           conn={source.conn}
           sid={source.sid}
@@ -213,6 +305,7 @@ export function ResultGrid({ result, label, record, source }: { result: ResultSe
             setSelected(new Set());
             dispatch({ type: "discard" });
             toast(t("data.applied", { table: target.table }));
+            void onRefresh?.();
           }}
         />
       )}

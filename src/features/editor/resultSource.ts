@@ -51,13 +51,15 @@ export function sourceTables(sources: (ColumnOrigin | undefined)[]): { schema: s
 }
 
 /**
- * First table whose whole primary key is in the result: rows can be deleted from it by those
- * columns. `keyIdxs` are result column indexes (ascending), `keyNames` the table's column names for them.
+ * First table whose whole primary key is in the result: its rows can be edited and deleted by those
+ * columns. `keyIdxs` are result column indexes (ascending), `keyNames` the table's column names for them,
+ * `tableCols` the table column behind each result column (undefined: another table or an expression),
+ * `complete` whether every table column is in the result (rows can then be duplicated).
  */
-export function deleteTarget(
+export function editTarget(
   sources: (ColumnOrigin | undefined)[],
   tableColumns: { schema: string; table: string; columns: Column[] }[],
-): { schema: string; table: string; keyIdxs: number[]; keyNames: string[] } | null {
+): { schema: string; table: string; keyIdxs: number[]; keyNames: string[]; tableCols: (Column | undefined)[]; complete: boolean } | null {
   for (const { schema, table, columns } of tableColumns) {
     const pk = columns.filter((c) => c.pk);
     if (!pk.length) continue;
@@ -66,7 +68,17 @@ export function deleteTarget(
     );
     if (idxs.some((i) => i < 0)) continue;
     const order = idxs.map((idx, k) => [idx, pk[k].name] as const).sort((a, b) => a[0] - b[0]);
-    return { schema, table, keyIdxs: order.map((o) => o[0]), keyNames: order.map((o) => o[1]) };
+    const tableCols = sources.map((s) =>
+      s?.schema === schema && s.table === table ? columns.find((c) => c.name.toLowerCase() === s.column.toLowerCase()) : undefined,
+    );
+    return {
+      schema,
+      table,
+      keyIdxs: order.map((o) => o[0]),
+      keyNames: order.map((o) => o[1]),
+      tableCols,
+      complete: columns.every((c) => tableCols.includes(c)),
+    };
   }
   return null;
 }

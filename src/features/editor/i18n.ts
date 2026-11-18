@@ -49,6 +49,8 @@ const en = {
   "results.selected": "{n} rows selected",
   "results.deleteFrom": "Delete {n} from {table}",
   "results.export": "Export",
+  "results.duplicate": "Duplicate {n}",
+  "results.duplicateHint": "Copy the selected rows as new rows (key columns use their default; edit them if needed). Nothing is inserted until you apply the pending changes.",
   "editor.params.title": "Query parameters",
   "editor.params.body": "Values go into the query as typed. Quote text yourself, e.g. 'abc'.",
 };
@@ -104,6 +106,8 @@ const id: typeof en = {
   "results.selected": "{n} baris dipilih",
   "results.deleteFrom": "Hapus {n} dari {table}",
   "results.export": "Ekspor",
+  "results.duplicate": "Duplikat {n}",
+  "results.duplicateHint": "Salin baris terpilih sebagai baris baru (kolom kunci memakai default; ubah bila perlu). Belum ada yang di-insert sampai perubahan diterapkan.",
   "editor.params.title": "Parameter query",
   "editor.params.body": "Nilai dimasukkan ke query apa adanya. Beri kutip untuk teks, mis. 'abc'.",
 };
