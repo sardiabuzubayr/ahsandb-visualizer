@@ -1,4 +1,4 @@
-import type { Column, ColumnOrigin } from "../../types";
+import type { Column, ColumnOrigin, ForeignKeyDef } from "../../types";
 
 const IDENT = String.raw`(?:"[^"]+"|\x60[^\x60]+\x60|\[[^\]]+\]|[\w$]+)`;
 const FROM = new RegExp(
@@ -48,6 +48,24 @@ export function sourceTables(sources: (ColumnOrigin | undefined)[]): { schema: s
   const seen = new Map<string, { schema: string; table: string }>();
   for (const s of sources) if (s && !seen.has(`${s.schema}.${s.table}`)) seen.set(`${s.schema}.${s.table}`, { schema: s.schema, table: s.table });
   return [...seen.values()];
+}
+
+/**
+ * The foreign key each result column is part of in its source table, with the result's column names for
+ * that table (lowercased, "" for other columns) so `followForeignKey` can read the key values from a row.
+ */
+export function columnForeignKeys(
+  sources: (ColumnOrigin | undefined)[],
+  tables: { schema: string; table: string; foreignKeys: ForeignKeyDef[] }[],
+): ({ fk: ForeignKeyDef; schema: string; columns: string[] } | undefined)[] {
+  return sources.map((s) => {
+    const tb = s && tables.find((x) => x.schema === s.schema && x.table === s.table);
+    const col = s?.column.toLowerCase();
+    const fk = tb?.foreignKeys.find((f) => f.columns.some((c) => c.toLowerCase() === col));
+    if (!fk || !tb) return undefined;
+    const columns = sources.map((o) => (o?.schema === tb.schema && o.table === tb.table ? o.column.toLowerCase() : ""));
+    return { fk: { ...fk, columns: fk.columns.map((c) => c.toLowerCase()) }, schema: tb.schema, columns };
+  });
 }
 
 /**

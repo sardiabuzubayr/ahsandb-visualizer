@@ -1,15 +1,15 @@
 import { useEffect, useReducer, useRef, useState, type MouseEvent } from "react";
-import { Copy, RotateCcw, Trash2 } from "lucide-react";
+import { ArrowUpRight, Copy, RotateCcw, Trash2 } from "lucide-react";
 import type { Cell, Column, Connection, ResultSet } from "../../types";
 import { Button, IconButton, cn } from "../../components/ui";
 import { formatCell } from "./format";
 import { visibleRange } from "./results";
 import { ResizeHandle, gridKey, useColumnWidths, type Measure } from "./columnWidths";
-import { columnSources, editTarget, sourceTables } from "./resultSource";
+import { columnForeignKeys, columnSources, editTarget, sourceTables } from "./resultSource";
 import { api } from "../../lib/api";
-import { useToast } from "../../state/app";
+import { useApp, useToast } from "../../state/app";
 import { pendingReducer, rowKeyOf } from "../data/pending";
-import { defaultSchema, selectRows } from "../data/table";
+import { defaultSchema, followForeignKey, selectRows } from "../data/table";
 import { PendingChangesPanel } from "../data/PendingChangesPanel";
 import { RecordView } from "../data/RecordView";
 import { CellEditor, parseCell } from "../data/CellEditor";
@@ -52,6 +52,8 @@ export function ResultGrid({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const anchor = useRef<number | null>(null);
   const [target, setTarget] = useState<Target | null>(null);
+  const [fkCols, setFkCols] = useState<ReturnType<typeof columnForeignKeys>>([]);
+  const app = useApp();
   const [changes, dispatch] = useReducer(pendingReducer, []);
   const [gone, setGone] = useState<Set<string>>(new Set()); // keys of rows deleted from the database
   useEffect(() => setGone(new Set()), [result.rows]); // fresh rows after a refresh
@@ -76,8 +78,19 @@ export function ResultGrid({
     const schema = conn.driver === "mysql" || conn.driver === "mariadb" ? (source.database ?? defaultSchema(conn)) : defaultSchema(conn);
     const sources = columnSources(result.columns, result.sql, schema);
     let live = true;
-    Promise.all(sourceTables(sources).map(async (tb) => ({ ...tb, columns: await api.tableColumns(source.sid, tb.schema, tb.table).catch(() => []) })))
-      .then((tables) => live && setTarget(editTarget(sources, tables)));
+    Promise.all(
+      sourceTables(sources).map(async (tb) => {
+        const [columns, foreignKeys] = await Promise.all([
+          api.tableColumns(source.sid, tb.schema, tb.table).catch(() => []),
+          api.loadTable(source.sid, tb.schema, tb.table).then((d) => d.foreignKeys, () => []),
+        ]);
+        return { ...tb, columns, foreignKeys };
+      }),
+    ).then((tables) => {
+      if (!live) return;
+      setTarget(editTarget(sources, tables));
+      setFkCols(columnForeignKeys(sources, tables));
+    });
     return () => {
       live = false;
     };
@@ -128,12 +141,19 @@ export function ResultGrid({
       {isDeleted ? <RotateCcw size={12} /> : <Trash2 size={12} />}
     </IconButton>
   );
+  // Opens the referenced table filtered to the row this foreign key points at.
+  const openReferenced = (j: number, row: Cell[]) => {
+    const f = fkCols[j];
+    const to = f && source && followForeignKey(source.conn.driver, f.fk, f.schema, f.columns, row);
+    if (to)
+      app.dispatch({ type: "openTab", kind: "table", connectionId: source.conn.id, title: to.table, target: to.target, database: source.database, filter: to.filter });
+  };
   /** `values` set = a pending insert's cell (absent = column default). */
   const valueCell = (
     key: string,
     j: number,
     original: Cell,
-    opts: { isDeleted?: boolean; vertical?: boolean; values?: Record<string, Cell> } = {},
+    opts: { isDeleted?: boolean; vertical?: boolean; values?: Record<string, Cell>; row?: Cell[] } = {},
   ) => {
     const col = editColumns[j] ?? result.columns[j];
     const tc = target?.tableCols[j];
@@ -160,6 +180,7 @@ export function ResultGrid({
         />
       );
     const text = value === undefined ? "DEFAULT" : formatCell(value, col.numeric);
+    const fk = !isNew && original !== null && opts.row ? fkCols[j] : undefined;
     return (
       <td
         key={j}
@@ -172,9 +193,20 @@ export function ResultGrid({
           col.numeric && (opts.vertical ? "font-mono" : "text-right font-mono"),
           value === undefined ? "font-mono text-faint" : value === null && "text-faint italic",
           isEdited && "bg-accent-bg shadow-[inset_0_0_0_1.5px_var(--accent)]",
+          fk && "group/fk relative pr-7",
         )}
       >
         {text}
+        {fk && (
+          <IconButton
+            label={t("data.followFk", { table: fk.fk.refTable })}
+            size={20}
+            onClick={() => openReferenced(j, opts.row!)}
+            className="absolute top-1/2 right-1 -translate-y-1/2 opacity-0 group-hover/fk:opacity-100 focus:opacity-100"
+          >
+            <ArrowUpRight size={12} />
+          </IconButton>
+        )}
       </td>
     );
   };
@@ -188,7 +220,7 @@ export function ResultGrid({
       // Selected rows, else the first one (a one-row result needs no click).
       records={(pick.length ? pick : rows.length ? [0] : []).map((i) => ({ row: rows[i], i, key: rowKey(rows[i], i) }))}
       isDeleted={(k) => deleted.has(k)}
-      renderCell={(k, _c, j, row) => valueCell(k, j, row[j], { isDeleted: deleted.has(k), vertical: true })}
+      renderCell={(k, _c, j, row) => valueCell(k, j, row[j], { isDeleted: deleted.has(k), vertical: true, row })}
     />
   ) : (
     <div
@@ -250,7 +282,7 @@ export function ResultGrid({
                 <td className={cn("px-2 text-right font-mono text-[11px]", isDeleted ? "text-prod" : "text-faint")}>
                   {target && rowButton(key, isDeleted)} {i + 1}
                 </td>
-                {row.map((v, j) => valueCell(key, j, v, { isDeleted }))}
+                {row.map((v, j) => valueCell(key, j, v, { isDeleted, row }))}
               </tr>
             );
           })}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Column } from "../../types";
-import { columnSources, editTarget, sourceTables } from "./resultSource";
+import { columnForeignKeys, columnSources, editTarget, sourceTables } from "./resultSource";
 
 const col = (name: string, extra: Partial<Column> = {}): Column => ({ name, type: "text", ...extra });
 
@@ -63,3 +63,14 @@ describe("editTarget", () => {
   });
 });
 
+describe("columnForeignKeys", () => {
+  it("maps result columns to the foreign key of their source table", () => {
+    const t = { schema: "public", table: "transaction" };
+    const fk = { columns: ["Santri_id"], refTable: "santri", refColumns: ["id"] };
+    const sources = [{ ...t, column: "transaction_id" }, { ...t, column: "santri_id" }, undefined];
+    const out = columnForeignKeys(sources, [{ ...t, foreignKeys: [fk] }]);
+    expect(out[0]).toBeUndefined();
+    expect(out[2]).toBeUndefined();
+    expect(out[1]).toEqual({ fk: { ...fk, columns: ["santri_id"] }, schema: "public", columns: ["transaction_id", "santri_id", ""] });
+  });
+});
