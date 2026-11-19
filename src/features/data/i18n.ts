@@ -1,6 +1,8 @@
 const en = {
   "data.filter": "Filter",
   "data.filterLabel": "Filter rows (SQL WHERE condition)",
+  "data.filterColumns": "Columns",
+  "data.filterUnknown": "Not a column of this table: {names}. Fix it, or press Enter again to search anyway.",
   "data.filterPlaceholder": "status = 'paid' AND total > 100   ·   Enter to apply, Esc to cancel",
   "data.followFk": "Open the referenced row in {table}",
   "data.back": "Back",
@@ -52,6 +54,8 @@ const en = {
 const id: typeof en = {
   "data.filter": "Filter",
   "data.filterLabel": "Filter baris (kondisi SQL WHERE)",
+  "data.filterColumns": "Kolom",
+  "data.filterUnknown": "Bukan kolom tabel ini: {names}. Perbaiki, atau tekan Enter lagi untuk tetap mencari.",
   "data.filterPlaceholder": "status = 'paid' AND total > 100   ·   Enter untuk terapkan, Esc untuk batal",
   "data.followFk": "Buka baris yang dirujuk di {table}",
   "data.back": "Kembali",

@@ -12,6 +12,7 @@ import { scopedId } from "../../lib/scope";
 import { firstDatabase } from "../editor/treeScope";
 import { PendingChangesPanel } from "./PendingChangesPanel";
 import { CellEditor, parseCell } from "./CellEditor";
+import { FilterInput } from "./FilterInput";
 import { KeyBadge, RecordView } from "./RecordView";
 import { pendingReducer, rowKeyOf } from "./pending";
 import { followForeignKey, nextSort, selectRows, splitTarget, straightQuotes } from "./table";
@@ -241,21 +242,14 @@ export function TableDataTab({ tab }: { tab: Tab }) {
           </span>
           <span aria-hidden="true" className="h-5 w-px bg-border" />
           {filterDraft !== null ? (
-            <input
-              autoFocus
-              aria-label={t("data.filterLabel")}
-              placeholder={t("data.filterPlaceholder")}
+            <FilterInput
               value={filterDraft}
-              onChange={(e) => setFilterDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") applyFilter();
-                if (e.key === "Escape") setFilterDraft(null);
-              }}
-              onBlur={() => setFilterDraft(null)}
-              spellCheck={false}
-              autoCorrect="off"
-              autoCapitalize="off"
-              className="h-[26px] min-w-[280px] flex-[0_1_420px] rounded-md border border-accent bg-surface px-2.5 font-mono text-xs outline-none"
+              // All table columns once known; the loaded page's columns until then.
+              columns={keyColumns.length ? keyColumns : page.columns}
+              driver={conn.driver}
+              onChange={setFilterDraft}
+              onApply={applyFilter}
+              onCancel={() => setFilterDraft(null)}
             />
           ) : (
             <>
